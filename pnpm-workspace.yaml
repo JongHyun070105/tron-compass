@@ -1,0 +1,7 @@
+allowBuilds:
+  '@google/genai': true
+  '@reown/appkit': true
+  esbuild: true
+  keccak: true
+  protobufjs: true
+  unrs-resolver: true
