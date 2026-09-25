@@ -219,71 +219,107 @@ export function ReplayMonitor({
 
       {/* Rebalance Proposal Card (Triggered by scenario) */}
       {proposal.triggered && (
-        <div className="p-6 rounded-2xl bg-amber-50/50 border border-amber-200 space-y-4 animate-in fade-in">
+        <div className="p-6 sm:p-7 rounded-3xl bg-amber-50/70 border-2 border-amber-300 space-y-5 animate-in fade-in shadow-xs">
           <div className="flex items-center justify-between border-b border-amber-200/80 pb-3 flex-wrap gap-2">
-            <div className="flex items-center gap-2">
-              <ShieldAlert className="w-5 h-5 text-amber-600" />
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-2xl bg-amber-500 text-white flex items-center justify-center shadow-2xs">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
               <div>
-                <h3 className="text-sm font-bold text-amber-950">
-                  신규 리밸런싱 최적화 제안
+                <h3 className="text-base sm:text-lg font-extrabold text-amber-950">
+                  시장 상황이 바뀌었어요
                 </h3>
-                <span className="text-xs text-amber-800">
-                  사유: {proposal.primaryReason}
+                <span className="text-xs text-amber-800 font-medium">
+                  원인: {proposal.primaryReason}
                 </span>
               </div>
             </div>
 
-            <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-white text-amber-800 border border-amber-200 font-semibold shadow-2xs">
-              자동 매매 금지 · 사용자 승인 필수
+            <span className="text-[11px] px-3 py-1 rounded-full bg-white text-amber-900 border border-amber-300 font-bold shadow-2xs">
+              자동 매매 절대 금지 · 사용자 승인 필수
             </span>
           </div>
 
-          {/* AI Explanation of Rebalance */}
-          <div className="p-4 rounded-xl bg-white border border-amber-200/70 text-xs text-slate-700 leading-relaxed space-y-1">
-            <div className="flex items-center gap-1.5 text-amber-700 font-bold mb-1">
-              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-              <span>AI 리밸런싱 분석 및 권고사항:</span>
+          {/* Return Impact Comparison Card: Old Return vs New Return vs Delta */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="p-4 rounded-2xl bg-white border border-amber-200/90 space-y-1">
+              <span className="text-slate-400 block text-[11px] font-medium">
+                기존 예상 순수익 ({originalPlan.horizonDays}일)
+              </span>
+              <div className="text-xl font-extrabold font-mono text-slate-800">
+                +${proposal.originalExpectedReturnUsd}
+              </div>
+              <span className="text-[10px] text-slate-400">초기 시장 조건 기준</span>
             </div>
-            <p>
+
+            <div className="p-4 rounded-2xl bg-white border border-amber-200/90 space-y-1">
+              <span className="text-slate-400 block text-[11px] font-medium">
+                시장 변동 후 예상 수익
+              </span>
+              <div className="text-xl font-extrabold font-mono text-amber-700">
+                +${proposal.newExpectedReturnUsd}
+              </div>
+              <span className="text-[10px] text-amber-600 font-semibold">인센티브 소멸 반영</span>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-amber-100/70 border border-amber-300 space-y-1">
+              <span className="text-amber-800 block text-[11px] font-bold">
+                예상 수익 변화 (임팩트)
+              </span>
+              <div className="text-2xl font-black font-mono text-rose-600 flex items-center gap-1">
+                <span>{proposal.deltaReturnPct}</span>
+                <span className="text-xs font-semibold text-rose-500">
+                  (${proposal.deltaReturnUsd})
+                </span>
+              </div>
+              <span className="text-[10px] text-amber-800 font-medium">리밸런싱 트리거 충족</span>
+            </div>
+          </div>
+
+          {/* AI Explanation of Rebalance */}
+          <div className="p-4 rounded-2xl bg-white border border-amber-200/70 text-xs text-slate-700 leading-relaxed space-y-1.5 shadow-2xs">
+            <div className="flex items-center gap-1.5 text-amber-800 font-bold">
+              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+              <span>AI 리밸런싱 진단 및 대응 권고:</span>
+            </div>
+            <p className="text-slate-600 leading-relaxed">
               {isExplaining
                 ? "AI 권고사항 생성 중..."
                 : aiRebalanceAdvice ||
-                  "기존 포지션의 인센티브 보상 소멸로 인해 기대 수익률이 급감했습니다. 수익률이 저하된 자산을 회수하고, 현재 안정적 수익을 제공하는 대체 마켓으로 재배분하는 것이 유리합니다."}
+                  "기존 포지션의 USDD 채굴 인센티브 보상 소멸로 인해 기대 수익률이 30% 이상 급감했습니다. 수익성이 저하된 자산을 회수하고, 현재 안정적 수익을 제공하는 대체 마켓으로 재배분하는 것이 유리합니다."}
             </p>
           </div>
 
-          {/* Proposed Plan Comparison & CTA */}
-          <div className="p-4 rounded-xl bg-white border border-slate-200 flex items-center justify-between flex-wrap gap-4 text-xs">
-            <div>
-              <span className="text-slate-400 block text-[11px]">제안된 신규 플랜</span>
-              <strong className="text-slate-900 text-sm font-bold">
+          {/* Proposed Plan Comparison & Decisions: [현재 유지] vs [새 플랜 채택] */}
+          <div className="p-5 rounded-2xl bg-white border border-slate-200 flex items-center justify-between flex-wrap gap-4 text-xs shadow-2xs">
+            <div className="space-y-1">
+              <span className="text-slate-400 block text-[11px] font-medium">제안된 신규 플랜</span>
+              <strong className="text-slate-900 text-sm font-bold block">
                 {proposal.proposedPlan.label}
               </strong>
-            </div>
-
-            <div>
-              <span className="text-slate-400 block text-[11px]">개선된 예상 APY</span>
-              <span className="text-emerald-600 font-mono font-extrabold text-base">
-                {proposal.proposedPlan.effectiveNetApy}
+              <span className="text-xs text-emerald-600 font-mono font-bold">
+                신규 플랜 복구 APY: {proposal.proposedPlan.effectiveNetApy}
               </span>
             </div>
 
-            <div>
-              <span className="text-slate-400 block text-[11px]">유지 비상금</span>
-              <span className="text-slate-800 font-mono font-semibold">
-                ${proposal.proposedPlan.liquidReserveUsd} ({proposal.proposedPlan.liquidReservePct})
-              </span>
-            </div>
-
-            {onApplyRebalance && (
+            <div className="flex items-center gap-3">
               <button
-                onClick={() => onApplyRebalance(proposal.proposedPlan)}
-                className="bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-2xs transition-colors cursor-pointer"
+                onClick={handleResetToLive}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 font-semibold transition-colors cursor-pointer"
               >
-                <span>제안 플랜 채택하기</span>
-                <ArrowRight className="w-3.5 h-3.5" />
+                현재 유지 (포지션 불변)
               </button>
-            )}
+
+              {onApplyRebalance && (
+                <button
+                  onClick={() => onApplyRebalance(proposal.proposedPlan)}
+                  className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-2xs transition-all active:scale-[0.98] cursor-pointer"
+                >
+                  <span>새 플랜 채택 및 전환</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

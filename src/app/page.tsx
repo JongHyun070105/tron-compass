@@ -9,12 +9,14 @@ import { AiNeedsPlanner } from "@/components/planner/AiNeedsPlanner";
 import { PlanComparison } from "@/components/plans/PlanComparison";
 import { ExecutionModal } from "@/components/execution/ExecutionModal";
 import { ReplayMonitor } from "@/components/monitoring/ReplayMonitor";
+import { WhatIfControls } from "@/components/planner/WhatIfControls";
 import {
   NeedsProfile,
   AllocationPlan,
   AllocationLeg,
   YieldOpportunity,
 } from "@/domain/allocation/types";
+import { generateAllocationPlans, computeTotalCapitalUsd } from "@/domain/allocation/engine";
 import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
 import { compassStorage } from "@/lib/persistence/storage";
 import {
@@ -58,6 +60,7 @@ export default function HomePage() {
     riskLevel: "LOW",
     maxVolatileExposurePct: "0.20",
     goal: "BALANCED",
+    protectionClause: "여행비 $300은 운용 대상에서 제외",
     missingFields: [],
     assumptions: [
       "투자 기간 90일 기준 복리 수익 계산",
@@ -73,14 +76,11 @@ export default function HomePage() {
   const [aiModel, setAiModel] = useState<string>("gemini-2.5-flash");
   const [isExplainingPlans, setIsExplainingPlans] = useState<boolean>(false);
 
-  // Deduplication ref for AI explain calls
-  const lastExplainedKeyRef = useRef<string>("");
-  const isExplainingRef = useRef<boolean>(false);
-
-  // Execution Modal State
+  // Execution Modal State (Support both Supply & Redeem)
   const [isExecutionModalOpen, setIsExecutionModalOpen] = useState(false);
   const [selectedPlanForExecution, setSelectedPlanForExecution] = useState<AllocationPlan | null>(null);
   const [selectedLegForExecution, setSelectedLegForExecution] = useState<AllocationLeg | null>(null);
+  const [executionMode, setExecutionMode] = useState<"SUPPLY" | "REDEEM">("SUPPLY");
 
   // Active Tab & Stepper
   const [activeTab, setActiveTab] = useState<"PLANNER" | "MARKET" | "MONITOR">("PLANNER");
@@ -90,6 +90,7 @@ export default function HomePage() {
   const heroRef = useRef<HTMLDivElement>(null);
   const goalsRef = useRef<HTMLDivElement>(null);
   const plansRef = useRef<HTMLDivElement>(null);
+  const initialPlanTriggeredRef = useRef<boolean>(false);
 
   // Fetch initial market data
   const loadMarketData = async (forceRefresh: boolean = false) => {
@@ -103,13 +104,29 @@ export default function HomePage() {
       const justlendData = await justlendRes.json();
       const usddData = await usddRes.json();
 
+      let loadedOpps: YieldOpportunity[] = [];
+      let loadedUsdd: UsddProtocolEvidence | null = null;
+
       if (justlendData.success && justlendData.markets) {
+        loadedOpps = justlendData.markets;
         setOpportunities(justlendData.markets);
         setLastFetchedAt(justlendData.fetchedAt);
       }
 
       if (usddData.success && usddData.data) {
+        loadedUsdd = usddData.data;
         setUsddEvidence(usddData.data);
+      }
+
+      // Generate initial deterministic plans immediately with verified data
+      if (loadedOpps.length > 0) {
+        const { plans: initialPlans } = generateAllocationPlans(
+          profile,
+          loadedOpps,
+          undefined,
+          loadedUsdd
+        );
+        setPlans(initialPlans);
       }
     } catch (err) {
       console.warn("Failed to load initial market data:", err);
@@ -120,78 +137,83 @@ export default function HomePage() {
 
   useEffect(() => {
     loadMarketData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Generate plans upon profile confirmation (strictly deduplicated AI explain call)
-  const handleProfileConfirmed = async (confirmedProfile: NeedsProfile) => {
+  // Instantaneous deterministic plan calculation upon profile confirmation
+  const handleProfileConfirmed = (confirmedProfile: NeedsProfile) => {
     setProfile(confirmedProfile);
     setCurrentStep(3); // Advance stepper to Plan Comparison
 
-    try {
-      const res = await fetch("/api/allocation/plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile: confirmedProfile }),
-      });
+    if (opportunities.length > 0) {
+      const { plans: generatedPlans } = generateAllocationPlans(
+        confirmedProfile,
+        opportunities,
+        undefined,
+        usddEvidence
+      );
+      setPlans(generatedPlans);
 
-      const data = await res.json();
-      if (data.success && data.data?.plans) {
-        const generatedPlans: AllocationPlan[] = data.data.plans;
-        setPlans(generatedPlans);
-
-        // Save original plan snapshot
-        if (generatedPlans[0]) {
-          await compassStorage.savePlan({
-            id: `plan-snapshot-${Date.now()}`,
-            walletAddress: walletState.address,
-            createdAt: new Date().toISOString(),
-            plan: generatedPlans[0],
-            profile: confirmedProfile,
-            marketSnapshot: opportunities,
-          });
-        }
-
-        // Deduplicated AI explanation trigger
-        const explainKey = `${confirmedProfile.horizonDays}_${confirmedProfile.minimumLiquidUsd}_${confirmedProfile.riskLevel}_${generatedPlans.map((p) => p.id).join("_")}`;
-
-        if (lastExplainedKeyRef.current !== explainKey && !isExplainingRef.current) {
-          lastExplainedKeyRef.current = explainKey;
-          isExplainingRef.current = true;
-          setIsExplainingPlans(true);
-
-          try {
-            const explainRes = await fetch("/api/ai/explain", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                profile: confirmedProfile,
-                plans: generatedPlans,
-              }),
-            });
-            const explainData = await explainRes.json();
-            if (explainData.success && explainData.data) {
-              setAiExplanation({
-                ...explainData.data,
-                provider: explainData.provider || "gemini",
-              });
-              setAiProvider(explainData.provider || "gemini");
-              if (explainData.model) setAiModel(explainData.model);
-            }
-          } catch (err) {
-            console.warn("AI explanation fetch failed:", err);
-          } finally {
-            isExplainingRef.current = false;
-            setIsExplainingPlans(false);
-          }
-        }
+      // Save plan snapshot asynchronously
+      if (generatedPlans[0]) {
+        compassStorage.savePlan({
+          id: `plan-snapshot-${Date.now()}`,
+          walletAddress: walletState.address,
+          createdAt: new Date().toISOString(),
+          plan: generatedPlans[0],
+          profile: confirmedProfile,
+          marketSnapshot: opportunities,
+        }).catch(console.warn);
       }
-    } catch (err) {
-      console.warn("Plan generation failed:", err);
+    }
+
+    plansRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  // Instantaneous What-If constraint tuning (0ms latency, zero AI call)
+  const handleWhatIfChange = (updatedProfile: NeedsProfile) => {
+    setProfile(updatedProfile);
+    if (opportunities.length > 0) {
+      const { plans: updatedPlans } = generateAllocationPlans(
+        updatedProfile,
+        opportunities,
+        undefined,
+        usddEvidence
+      );
+      setPlans(updatedPlans);
     }
   };
 
-  // Generate initial plans automatically once opportunities load (runs only once)
-  const initialPlanTriggeredRef = useRef(false);
+  // On-demand AI explanation (only when user explicitly requests)
+  const handleRequestAiExplanation = async () => {
+    if (isExplainingPlans || plans.length === 0) return;
+    setIsExplainingPlans(true);
+
+    try {
+      const explainRes = await fetch("/api/ai/explain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile,
+          plans,
+        }),
+      });
+      const explainData = await explainRes.json();
+      if (explainData.success && explainData.data) {
+        setAiExplanation({
+          ...explainData.data,
+          provider: explainData.provider || "gemini",
+        });
+        setAiProvider(explainData.provider || "gemini");
+        if (explainData.model) setAiModel(explainData.model);
+      }
+    } catch (err) {
+      console.warn("AI explanation fetch failed:", err);
+    } finally {
+      setIsExplainingPlans(false);
+    }
+  };
+
   useEffect(() => {
     if (opportunities.length > 0 && plans.length === 0 && !initialPlanTriggeredRef.current) {
       initialPlanTriggeredRef.current = true;
@@ -315,9 +337,14 @@ export default function HomePage() {
     return () => window.removeEventListener("message", handleTronMessage);
   }, [walletState.isDemoMode]);
 
-  const handleSelectActionForExecution = (plan: AllocationPlan, leg: AllocationLeg) => {
+  const handleSelectActionForExecution = (
+    plan: AllocationPlan,
+    leg: AllocationLeg,
+    mode: "SUPPLY" | "REDEEM" = "SUPPLY"
+  ) => {
     setSelectedPlanForExecution(plan);
     setSelectedLegForExecution(leg);
+    setExecutionMode(mode);
     setCurrentStep(4); // Advance to Execution step
     setIsExecutionModalOpen(true);
   };
@@ -448,6 +475,13 @@ export default function HomePage() {
               />
             </div>
 
+            {/* Step 2.5: Interactive What-If Simulation Controls (0ms Latency, Local Deterministic) */}
+            <WhatIfControls
+              profile={profile}
+              totalPortfolioUsd={computeTotalCapitalUsd(profile)}
+              onChange={handleWhatIfChange}
+            />
+
             {/* Step 3: Plan Comparison (Plan A Safe vs Plan B Balanced) */}
             <div ref={plansRef}>
               <PlanComparison
@@ -457,6 +491,7 @@ export default function HomePage() {
                 aiProvider={aiProvider}
                 aiModel={aiModel}
                 isAiExplaining={isExplainingPlans}
+                onRequestAiExplanation={handleRequestAiExplanation}
               />
             </div>
           </div>
@@ -503,6 +538,7 @@ export default function HomePage() {
         isDemoMode={walletState.isDemoMode}
         trxBalance={walletState.trxBalance}
         networkName={walletState.network}
+        initialMode={executionMode}
         onExecutionCompleted={(hash) => {
           console.log("Transaction executed on Nile:", hash);
           setCurrentStep(5); // Move to post-execution monitoring

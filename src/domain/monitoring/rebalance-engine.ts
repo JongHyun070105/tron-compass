@@ -4,6 +4,7 @@ import {
   YieldOpportunity,
 } from "../allocation/types";
 import { generateAllocationPlans } from "../allocation/engine";
+import { decomposeLegYield } from "@/lib/math/yield";
 import { SafeMath, toDecimal, toPercentString } from "@/lib/math/decimal";
 
 export interface RebalanceTriggerCheck {
@@ -19,6 +20,10 @@ export interface RebalanceProposal {
   checks: RebalanceTriggerCheck[];
   primaryReason: string;
   marketDeltaSummary: string;
+  originalExpectedReturnUsd: string;
+  newExpectedReturnUsd: string;
+  deltaReturnUsd: string;
+  deltaReturnPct: string;
   proposedPlan: AllocationPlan;
 }
 
@@ -31,10 +36,26 @@ export function detectRebalanceOpportunity(
   const checks: RebalanceTriggerCheck[] = [];
   let shouldTrigger = false;
 
+  // Calculate degraded yield of current holdings under new market conditions
+  let simulatedCurrentNetYield = toDecimal(0);
+
   // 1. Check APY drop on allocated products
   for (const leg of originalPlan.allocations) {
     const currentOpp = currentOpportunities.find((o) => o.id === leg.productId);
-    if (!currentOpp) continue;
+    if (!currentOpp) {
+      simulatedCurrentNetYield = simulatedCurrentNetYield.plus(toDecimal(leg.netYieldEstimateUsd));
+      continue;
+    }
+
+    const decomp = decomposeLegYield(
+      leg.usdValue,
+      currentOpp.baseApy,
+      currentOpp.incentiveApy,
+      originalPlan.horizonDays,
+      currentOpp.estimatedEntryCostUsd,
+      currentOpp.estimatedExitCostUsd
+    );
+    simulatedCurrentNetYield = simulatedCurrentNetYield.plus(toDecimal(decomp.netYieldUsd));
 
     const originalApy = toDecimal(leg.totalApy);
     const currentApy = toDecimal(currentOpp.totalApy);
@@ -49,7 +70,7 @@ export function detectRebalanceOpportunity(
       shouldTrigger = true;
       checks.push({
         triggered: true,
-        reason: `${leg.productName} APY significantly decayed`,
+        reason: `${leg.productName} 채굴 인센티브 또는 수익률 급감 (APY significantly decayed)`,
         originalMetric: toPercentString(originalApy.toString()),
         currentMetric: toPercentString(currentApy.toString()),
         severity: "HIGH",
@@ -67,9 +88,9 @@ export function detectRebalanceOpportunity(
     shouldTrigger = true;
     checks.push({
       triggered: true,
-      reason: "Available liquid buffer breached minimum required reserve",
-      originalMetric: `$${requiredLiquid.toFixed(2)} (Required)`,
-      currentMetric: `$${currentLiquid.toFixed(2)} (Current)`,
+      reason: "가용 비상금이 필수 안전 유동성 기준선 미만으로 하락 (minimum required reserve breach)",
+      originalMetric: `$${requiredLiquid.toFixed(2)} (필수)`,
+      currentMetric: `$${currentLiquid.toFixed(2)} (현재)`,
       severity: "HIGH",
     });
   }
@@ -82,17 +103,28 @@ export function detectRebalanceOpportunity(
 
   const primaryReason = checks.length > 0
     ? checks[0].reason
-    : "No rebalance required: positions remain compliant with return & risk targets.";
+    : "리밸런싱 불필요: 현재 포지션이 목표 수익률 및 안전 조건을 충실히 유지하고 있습니다.";
 
   const marketDeltaSummary = checks
     .map((c) => `${c.reason} (${c.originalMetric} -> ${c.currentMetric})`)
     .join("; ");
 
+  const origReturn = toDecimal(originalPlan.expectedNetYieldUsd);
+  const newReturn = simulatedCurrentNetYield;
+  const deltaReturn = newReturn.minus(origReturn);
+  const deltaPct = origReturn.gt(0)
+    ? deltaReturn.div(origReturn).times(100).toFixed(1)
+    : "0.0";
+
   return {
     triggered: shouldTrigger,
     checks,
     primaryReason,
-    marketDeltaSummary: marketDeltaSummary || "Market conditions stable within tolerance bands.",
+    marketDeltaSummary: marketDeltaSummary || "시장 환경이 안정적인 허용 오차 내에서 유지 중입니다.",
+    originalExpectedReturnUsd: origReturn.toFixed(2),
+    newExpectedReturnUsd: newReturn.toFixed(2),
+    deltaReturnUsd: deltaReturn.toFixed(2),
+    deltaReturnPct: `${deltaReturn.gte(0) ? "+" : ""}${deltaPct}%`,
     proposedPlan,
   };
 }

@@ -23,11 +23,12 @@ import { toPercentString } from "@/lib/math/decimal";
 
 interface PlanComparisonProps {
   plans: AllocationPlan[];
-  onSelectActionForExecution: (plan: AllocationPlan, leg: AllocationLeg) => void;
+  onSelectActionForExecution: (plan: AllocationPlan, leg: AllocationLeg, mode?: "SUPPLY" | "REDEEM") => void;
   aiExplanation?: (PlanExplanation & { provider?: "gemini" | "mock_fallback" }) | null;
   aiProvider?: "gemini" | "mock_fallback";
   aiModel?: string;
   isAiExplaining?: boolean;
+  onRequestAiExplanation?: () => void;
 }
 
 export function PlanComparison({
@@ -37,6 +38,7 @@ export function PlanComparison({
   aiProvider,
   aiModel,
   isAiExplaining = false,
+  onRequestAiExplanation,
 }: PlanComparisonProps) {
   const [selectedPlanId, setSelectedPlanId] = useState<string>(plans[1]?.id || plans[0]?.id || "");
   const [expandedDiagnostics, setExpandedDiagnostics] = useState<Record<string, boolean>>({});
@@ -71,26 +73,31 @@ export function PlanComparison({
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            원금 안전과 목표 유동성을 보장하는 2가지 최적화 플랜을 비교해보세요.
+            원금 안전과 목표 유동성을 보장하는 2가지 결정론적 최적화 플랜입니다.
           </p>
         </div>
 
-        {/* AI Provider Badge */}
+        {/* AI Provider Badge & On-demand Trigger */}
         <div className="flex items-center gap-2">
-          {isGeminiLive ? (
+          {aiExplanation ? (
             <span className="bg-red-50 text-red-700 border border-red-200/80 px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 shadow-2xs">
               <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-              <span>Gemini 2.5 Flash 분석</span>
+              <span>Gemini 2.5 Flash 분석 완료</span>
             </span>
-          ) : (
-            <span className="bg-slate-100 text-slate-600 border border-slate-200 px-3 py-1 rounded-full text-xs font-medium flex items-center gap-1.5">
-              <span>규칙 기반 분석 (Fallback)</span>
-            </span>
-          )}
+          ) : onRequestAiExplanation ? (
+            <button
+              onClick={onRequestAiExplanation}
+              disabled={isAiExplaining}
+              className="bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+              <span>{isAiExplaining ? "AI 분석 리포트 작성 중..." : "AI 상세 분석 보기"}</span>
+            </button>
+          ) : null}
         </div>
       </div>
 
-      {/* Plan Cards Grid: 2 Premium Cards (Clean, Spacious, Large Numbers) */}
+      {/* Plan Cards Grid: 2 Premium Cards */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {plans.map((plan, index) => {
           const isSelected = selectedPlanId === plan.id;
@@ -98,26 +105,26 @@ export function PlanComparison({
           const isLiquidityFirst = plan.strategyType === "LIQUIDITY_FIRST";
           const isDiagnosticsOpen = !!expandedDiagnostics[plan.id];
 
-          // Simplified copy
           const planFriendlyName = isLiquidityFirst ? "안정형 (Safe)" : "수익형 (Balanced)";
           const planOneLineSummary = isLiquidityFirst
             ? "원금 보존과 즉시 출금 가능한 유동성을 최우선으로 확보합니다."
             : "최소 비상금을 유지하면서 JustLend 인센티브로 수익을 극대화합니다.";
 
-          // Short 4-bullet highlights as requested by design principle
-          const bulletHighlights = isLiquidityFirst
-            ? [
-                "언제든 출금할 수 있는 상시 비상금을 넉넉히 확보합니다",
-                "가격 변동이 있는 자산(TRX) 노출을 최소화합니다",
-                "락업 없는 코어 풀을 활용해 원금 손실을 철저히 방어합니다",
-                "예상 수익은 다소 낮지만 변동장에서도 가장 안전합니다",
-              ]
-            : [
-                "최소 비상금 조건을 충실히 지키며 자본 가동률을 극대화합니다",
-                "JustLend 및 USDD 인센티브 마이닝 복합 배분으로 높은 수익 추구",
-                "변동성 자산(TRX) 노출을 한도 내에서 철저히 통제합니다",
-                "약정 운용 기간 동안 복리 순수익을 최대로 높입니다",
-              ];
+          // Deterministic reasons generated directly by engine
+          const reasons =
+            plan.deterministicReasons && plan.deterministicReasons.length > 0
+              ? plan.deterministicReasons
+              : isLiquidityFirst
+              ? [
+                  "언제든 출금할 수 있는 상시 비상금을 넉넉히 확보합니다",
+                  "가격 변동이 있는 자산(TRX) 노출을 최소화합니다",
+                  "락업 없는 코어 풀을 활용해 원금 손실을 철저히 방어합니다",
+                ]
+              : [
+                  "최소 비상금 조건을 충실히 지키며 자본 가동률을 극대화합니다",
+                  "JustLend 및 USDD 인센티브 마이닝 복합 배분으로 높은 수익 추구",
+                  "변동성 자산(TRX) 노출을 한도 내에서 철저히 통제합니다",
+                ];
 
           return (
             <div
@@ -164,7 +171,7 @@ export function PlanComparison({
                   </p>
                 </div>
 
-                {/* 2. Primary Number: Expected APY (Visual Anchor) */}
+                {/* 2. Primary Number: Expected APY */}
                 <div className="bg-slate-50 border border-slate-200/70 rounded-2xl p-4 sm:p-5 flex items-baseline justify-between">
                   <div>
                     <span className="text-xs font-semibold text-slate-500 block mb-0.5">
@@ -214,26 +221,26 @@ export function PlanComparison({
                   </div>
                 </div>
 
-                {/* 4. Why this plan? (Short Bullet Summary) */}
+                {/* 4. Why this plan? (Deterministic Constraint Reasons) */}
                 <div className="space-y-2">
                   <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                    <span>왜 {isLiquidityFirst ? "안정형" : "수익형"} 플랜인가요?</span>
+                    <span>왜 {isLiquidityFirst ? "안정형" : "수익형"} 플랜인가요? (검증된 사유)</span>
                   </span>
 
                   <div className="bg-slate-50/80 border border-slate-200/60 rounded-2xl p-3.5 space-y-2">
-                    {bulletHighlights.map((bullet, bIdx) => (
-                      <div key={bIdx} className="text-xs text-slate-600 flex items-start gap-2">
+                    {reasons.map((reason, rIdx) => (
+                      <div key={rIdx} className="text-xs text-slate-600 flex items-start gap-2">
                         <span className="w-4 h-4 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5 text-[10px] font-bold">
                           ✓
                         </span>
-                        <span className="leading-snug">{bullet}</span>
+                        <span className="leading-snug">{reason}</span>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {/* 5. Main Allocation Summary (Clean List) */}
+                {/* 5. Main Allocation Summary (Clean List with Explicit Executability) */}
                 <div className="space-y-2">
                   <span className="text-xs font-bold text-slate-700 block">
                     포트폴리오 배분 내역
@@ -262,9 +269,13 @@ export function PlanComparison({
                           <span className="text-emerald-600 font-mono font-bold block text-sm">
                             {toPercentString(leg.totalApy)}
                           </span>
-                          {leg.executable && (
-                            <span className="text-[10px] text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded font-medium">
-                              Nile 실행 지원
+                          {leg.executabilityClass === "NILE_EXECUTABLE" ? (
+                            <span className="text-[10px] text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded font-bold">
+                              Nile 직접 실행 가능
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded font-medium">
+                              메인넷 분석 전용
                             </span>
                           )}
                         </div>
@@ -284,7 +295,7 @@ export function PlanComparison({
                   >
                     <span className="flex items-center gap-1.5 font-medium">
                       <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>세부 제약조건 검증 ({plan.constraintChecks.length}개 항목 확인)</span>
+                      <span>세부 제약조건 검증 ({plan.constraintChecks.length}개 항목 통과)</span>
                     </span>
                     {isDiagnosticsOpen ? (
                       <ChevronUp className="w-4 h-4" />
@@ -313,24 +324,37 @@ export function PlanComparison({
               </div>
 
               {/* 7. Action Button: Select CTA */}
-              <div className="pt-6 mt-6 border-t border-slate-100">
+              <div className="pt-6 mt-6 border-t border-slate-100 space-y-2">
                 {plan.allocations.some((a) => a.executable) ? (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const execLeg = plan.allocations.find((a) => a.executable)!;
-                      onSelectActionForExecution(plan, execLeg);
-                    }}
-                    className={`w-full font-bold text-xs py-3.5 rounded-2xl flex items-center justify-center gap-2 shadow-xs transition-all active:scale-[0.98] cursor-pointer ${
-                      isSelected
-                        ? "bg-slate-900 hover:bg-slate-800 text-white"
-                        : "bg-slate-100 hover:bg-slate-200 text-slate-800"
-                    }`}
-                  >
-                    <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-                    <span>이 플랜으로 실행 검토하기</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="space-y-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const execLeg = plan.allocations.find((a) => a.executable)!;
+                        onSelectActionForExecution(plan, execLeg, "SUPPLY");
+                      }}
+                      className={`w-full font-bold text-xs py-3.5 rounded-2xl flex items-center justify-center gap-2 shadow-xs transition-all active:scale-[0.98] cursor-pointer ${
+                        isSelected
+                          ? "bg-slate-900 hover:bg-slate-800 text-white"
+                          : "bg-slate-100 hover:bg-slate-200 text-slate-800"
+                      }`}
+                    >
+                      <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                      <span>Nile 공급(Supply) 실행 검토하기</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const execLeg = plan.allocations.find((a) => a.executable)!;
+                        onSelectActionForExecution(plan, execLeg, "REDEEM");
+                      }}
+                      className="w-full font-bold text-xs py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-slate-900 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <span>인출/상환(Redeem) 실행하기</span>
+                    </button>
+                  </div>
                 ) : (
                   <div className="text-center text-xs text-slate-400 py-2">
                     조회 전용 플랜 (Nile 모의 실행은 jTRX 선택 시 가능)
@@ -348,7 +372,7 @@ export function PlanComparison({
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
               <Sparkles className="w-4 h-4 text-amber-500" />
-              <span>AI 종합 추천 의견</span>
+              <span>AI 종합 추천 의견 (Gemini)</span>
             </div>
 
             <button
@@ -360,7 +384,7 @@ export function PlanComparison({
             </button>
           </div>
 
-          {/* Concise Recommendation Summary (Always Visible) */}
+          {/* Concise Recommendation Summary */}
           <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 text-slate-700 text-xs sm:text-sm leading-relaxed">
             <strong className="text-slate-900">추천 요약: </strong>
             <span>
@@ -368,7 +392,7 @@ export function PlanComparison({
             </span>
           </div>
 
-          {/* Detailed Paragraphs (Progressive Disclosure) */}
+          {/* Detailed Paragraphs */}
           {showFullAiDrawer && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 animate-in fade-in">
               <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">

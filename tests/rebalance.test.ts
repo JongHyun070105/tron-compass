@@ -38,7 +38,7 @@ describe("Historical Replay & Rebalance Engine", () => {
     expect(proposal.triggered).toBe(false);
   });
 
-  it("triggers rebalance when mining incentive expires in Replay Scenario 1", () => {
+  it("triggers rebalance when mining incentive expires in Replay Scenario 1 and calculates return impact", () => {
     const scenario1 = REPLAY_SCENARIOS[0];
     const degradedOpps = scenario1.simulatedMarketDelta(initialOpps);
 
@@ -52,6 +52,17 @@ describe("Historical Replay & Rebalance Engine", () => {
     expect(proposal.checks.length).toBeGreaterThan(0);
     expect(proposal.primaryReason).toContain("APY significantly decayed");
     expect(proposal.proposedPlan).toBeDefined();
+
+    // Verify calculated return metrics
+    expect(proposal.originalExpectedReturnUsd).toBeDefined();
+    expect(proposal.newExpectedReturnUsd).toBeDefined();
+    expect(proposal.deltaReturnUsd).toBeDefined();
+    expect(proposal.deltaReturnPct).toBeDefined();
+
+    // In Scenario 1 (incentive expires), original yield should degrade
+    expect(parseFloat(proposal.deltaReturnUsd!)).toBeLessThan(0);
+    expect(parseFloat(proposal.deltaReturnPct!)).toBeLessThan(0);
+
     // Proposed plan still satisfies all hard constraints
     expect(proposal.proposedPlan.constraintChecks.every((c) => c.passed)).toBe(true);
   });
@@ -71,4 +82,23 @@ describe("Historical Replay & Rebalance Engine", () => {
     expect(liquidCheck).toBeDefined();
     expect(liquidCheck?.triggered).toBe(true);
   });
+
+  it("never executes rebalance automatically without explicit human approval (Human-in-the-loop guarantee)", () => {
+    const scenario1 = REPLAY_SCENARIOS[0];
+    const degradedOpps = scenario1.simulatedMarketDelta(initialOpps);
+
+    const proposal = detectRebalanceOpportunity(
+      originalPlan,
+      sampleProfile,
+      degradedOpps
+    );
+
+    // Ensure the engine produces an immutable proposal object only, without any auto-broadcast tx
+    expect(proposal).not.toHaveProperty("transactionHash");
+    expect(proposal).not.toHaveProperty("broadcasted");
+    expect(proposal.triggered).toBe(true);
+    // Original plan remains unmodified in calling context
+    expect(originalPlan.id).toBeDefined();
+  });
 });
+

@@ -111,6 +111,8 @@ describe("Deterministic Allocation Engine", () => {
         estimatedCostUsd: "0.4",
         netYieldEstimateUsd: "13.6",
         executable: false,
+        executabilityClass: "LIVE_DATA_ONLY" as const,
+        executabilityLabel: "분석 전용",
       },
     ];
 

@@ -18,6 +18,7 @@ export const ExtractedProfileSchema = z.object({
   goal: GoalSchema.nullable().default("BALANCED"),
   allowedAssets: z.array(z.string()).optional().default([]),
   excludedAssets: z.array(z.string()).optional().default([]),
+  protectionClause: z.string().optional(),
   missingFields: z.array(z.string()).default([]),
   followUpQuestion: z.string().optional(),
   summary: z.string().default(""),

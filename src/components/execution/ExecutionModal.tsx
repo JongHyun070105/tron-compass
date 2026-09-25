@@ -4,8 +4,11 @@ import React, { useState, useEffect } from "react";
 import { AllocationPlan, AllocationLeg } from "@/domain/allocation/types";
 import {
   buildPreflightChecks,
+  buildRedeemPreflightChecks,
   prepareJTrxSupplyPreview,
+  prepareJTrxRedeemPreview,
   executeJTrxSupplyOnNile,
+  executeJTrxRedeemOnNile,
   pollTransactionStatus,
   TransactionLifecycleState,
   ExecutionPreview,
@@ -25,6 +28,8 @@ import {
   ChevronUp,
   Droplets,
   Check,
+  ArrowUpRight,
+  ArrowDownLeft,
 } from "lucide-react";
 
 interface ExecutionModalProps {
@@ -36,7 +41,9 @@ interface ExecutionModalProps {
   isWalletConnected: boolean;
   isDemoMode: boolean;
   trxBalance: string;
+  jTrxBalance?: string;
   networkName?: string;
+  initialMode?: "SUPPLY" | "REDEEM";
   onExecutionCompleted?: (txHash: string) => void;
 }
 
@@ -49,32 +56,59 @@ export function ExecutionModal({
   isWalletConnected,
   isDemoMode,
   trxBalance,
+  jTrxBalance = "250.00",
   networkName = "Nile Testnet",
+  initialMode = "SUPPLY",
   onExecutionCompleted,
 }: ExecutionModalProps) {
-  const [depositAmount, setDepositAmount] = useState<string>("50");
+  const [actionMode, setActionMode] = useState<"SUPPLY" | "REDEEM">(initialMode);
+  const [supplyAmount, setSupplyAmount] = useState<string>("50");
+  const [redeemAmount, setRedeemAmount] = useState<string>("100");
   const [hasAuthorized, setHasAuthorized] = useState<boolean>(false);
   const [lifecycleState, setLifecycleState] = useState<TransactionLifecycleState>("REVIEW");
   const [txHash, setTxHash] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [isTechnicalExpanded, setIsTechnicalExpanded] = useState<boolean>(false);
 
-  // Compute preflight whenever dependencies change
-  const preflight: PreflightResult = buildPreflightChecks({
-    isWalletConnected: isWalletConnected || isDemoMode,
-    walletAddress: walletAddress || (isDemoMode ? "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb" : ""),
-    currentNetwork: isDemoMode ? "nile" : networkName,
-    trxBalance: isDemoMode ? "500.00" : trxBalance,
-    requiredAmount: depositAmount,
-    asset: "TRX",
-  });
+  // Synchronize initialMode whenever modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setActionMode(initialMode);
+    }
+  }, [isOpen, initialMode]);
 
-  const preview: ExecutionPreview = prepareJTrxSupplyPreview(
-    depositAmount || "50",
-    walletAddress || (isDemoMode ? "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb" : "T...")
-  );
+  // Compute preflight dynamically based on active mode
+  const preflight: PreflightResult =
+    actionMode === "SUPPLY"
+      ? buildPreflightChecks({
+          isWalletConnected: isWalletConnected || isDemoMode,
+          walletAddress: walletAddress || (isDemoMode ? "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb" : ""),
+          currentNetwork: isDemoMode ? "nile" : networkName,
+          trxBalance: isDemoMode ? "500.00" : trxBalance,
+          requiredAmount: supplyAmount,
+          asset: "TRX",
+        })
+      : buildRedeemPreflightChecks({
+          isWalletConnected: isWalletConnected || isDemoMode,
+          walletAddress: walletAddress || (isDemoMode ? "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb" : ""),
+          currentNetwork: isDemoMode ? "nile" : networkName,
+          jTrxBalance: isDemoMode ? "250.00" : jTrxBalance,
+          requiredJTrxAmount: redeemAmount,
+          trxBalanceForFee: isDemoMode ? "500.00" : trxBalance,
+        });
 
-  // Reset or initialize state strictly upon opening modal
+  const preview: ExecutionPreview =
+    actionMode === "SUPPLY"
+      ? prepareJTrxSupplyPreview(
+          supplyAmount || "50",
+          walletAddress || (isDemoMode ? "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb" : "T...")
+        )
+      : prepareJTrxRedeemPreview(
+          redeemAmount || "100",
+          walletAddress || (isDemoMode ? "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb" : "T...")
+        );
+
+  // Reset or initialize state strictly upon opening modal or changing mode
   useEffect(() => {
     if (isOpen) {
       setHasAuthorized(false);
@@ -83,21 +117,25 @@ export function ExecutionModal({
 
       if (!preflight.ready) {
         setLifecycleState("PREFLIGHT_FAILED");
-        const balanceCheck = preflight.checks.find((c) => c.key === "BALANCE_SUFFICIENT");
+        const balanceCheck = preflight.checks.find(
+          (c) => c.key === "BALANCE_SUFFICIENT" || c.key === "JTRX_BALANCE_SUFFICIENT"
+        );
         if (balanceCheck && !balanceCheck.passed) {
-          setStatusMessage(
-            `Nile TRX 잔고가 부족합니다 (보유: ${preflight.currentBalanceTrx} TRX / 필요: ${preflight.requiredTotalTrx} TRX). 무료 Faucet 충전이 필요합니다.`
-          );
+          setStatusMessage(balanceCheck.message);
         } else {
           setStatusMessage("사전 실행 조건을 충족하지 못했습니다. 지갑 연결 및 네트워크를 확인해 주세요.");
         }
       } else {
         setLifecycleState("REVIEW");
-        setStatusMessage("실행 조건을 검토하신 후 동의 체크박스를 선택해 주세요.");
+        setStatusMessage(
+          actionMode === "SUPPLY"
+            ? "공급 실행 조건을 검토하신 후 동의 체크박스를 선택해 주세요."
+            : "인출/상환 실행 조건을 검토하신 후 동의 체크박스를 선택해 주세요."
+        );
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, plan?.id, leg?.asset, isDemoMode, trxBalance]);
+  }, [isOpen, plan?.id, leg?.asset, isDemoMode, trxBalance, actionMode]);
 
   // Update state when checkbox toggles
   useEffect(() => {
@@ -128,7 +166,10 @@ export function ExecutionModal({
       if (isDemoMode) {
         // Simulated Nile transaction strictly tagged as DEMO
         await new Promise((r) => setTimeout(r, 1200));
-        const demoHash = "7f8b9c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b";
+        const demoHash =
+          actionMode === "SUPPLY"
+            ? "7f8b9c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b"
+            : "4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b7f8b9c1d2e3f";
         setTxHash(demoHash);
         setLifecycleState("BROADCASTING");
         setStatusMessage("Nile 테스트넷으로 트랜잭션 브로드캐스트 완료. 온체인 영수증 확인 중...");
@@ -138,15 +179,19 @@ export function ExecutionModal({
 
         await new Promise((r) => setTimeout(r, 1000));
         setLifecycleState("CONFIRMED");
-        setStatusMessage("트랜잭션이 온체인 블록에 최종 확정(CONFIRMED)되었습니다! (체험 모드)");
+        setStatusMessage(
+          actionMode === "SUPPLY"
+            ? "예치 트랜잭션이 온체인 블록에 최종 확정(CONFIRMED)되었습니다! (체험 모드)"
+            : "인출/상환 트랜잭션이 온체인 블록에 최종 확정(CONFIRMED)되었습니다! (체험 모드)"
+        );
 
         await compassStorage.recordExecution({
           id: `exec-demo-${Date.now()}`,
           planId: plan.id,
           walletAddress: walletAddress || "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
           txHash: demoHash,
-          asset: "TRX",
-          amount: depositAmount,
+          asset: actionMode === "SUPPLY" ? "TRX" : "jTRX",
+          amount: actionMode === "SUPPLY" ? supplyAmount : redeemAmount,
           targetContract: preview.targetContract,
           network: "NILE",
           dataScope: "DEMO",
@@ -158,7 +203,11 @@ export function ExecutionModal({
         if (onExecutionCompleted) onExecutionCompleted(demoHash);
       } else {
         // Real TronLink signature & broadcast on Nile
-        const res = await executeJTrxSupplyOnNile(preview);
+        const res =
+          actionMode === "SUPPLY"
+            ? await executeJTrxSupplyOnNile(preview)
+            : await executeJTrxRedeemOnNile(preview);
+
         if (res.status === "REJECTED") {
           setLifecycleState("REJECTED");
           setStatusMessage("사용자가 지갑 서명을 취소/거부했습니다.");
@@ -183,8 +232,8 @@ export function ExecutionModal({
             planId: plan.id,
             walletAddress,
             txHash: res.txHash,
-            asset: "TRX",
-            amount: depositAmount,
+            asset: actionMode === "SUPPLY" ? "TRX" : "jTRX",
+            amount: actionMode === "SUPPLY" ? supplyAmount : redeemAmount,
             targetContract: preview.targetContract,
             network: "NILE",
             dataScope: "LIVE_NILE",
@@ -212,11 +261,15 @@ export function ExecutionModal({
     }
   };
 
-  const isInsufficientTrx =
+  const isInsufficientFunds =
     !isDemoMode &&
-    preflight.checks.some((c) => c.key === "BALANCE_SUFFICIENT" && !c.passed);
+    preflight.checks.some(
+      (c) =>
+        (c.key === "BALANCE_SUFFICIENT" || c.key === "JTRX_BALANCE_SUFFICIENT") &&
+        !c.passed
+    );
 
-  // Stepper calculations for the visual progress bar
+  // Stepper status
   const getStepStatus = () => {
     switch (lifecycleState) {
       case "REVIEW":
@@ -271,7 +324,46 @@ export function ExecutionModal({
           </button>
         </div>
 
-        {/* Visual Progress Stepper (READY TO SIGN → waiting → broadcasting → confirming → confirmed) */}
+        {/* Mode Switcher: Supply vs Redeem */}
+        <div className="px-6 pt-3 bg-slate-50">
+          <div className="grid grid-cols-2 gap-1 bg-slate-200/80 p-1 rounded-xl text-xs font-bold">
+            <button
+              onClick={() => {
+                if (lifecycleState === "REVIEW" || lifecycleState === "PREFLIGHT_FAILED" || lifecycleState === "READY_TO_SIGN") {
+                  setActionMode("SUPPLY");
+                }
+              }}
+              disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED"].includes(lifecycleState)}
+              className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                actionMode === "SUPPLY"
+                  ? "bg-white text-slate-900 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <ArrowUpRight className="w-3.5 h-3.5 text-purple-600" />
+              <span>JustLend 공급 (Supply)</span>
+            </button>
+
+            <button
+              onClick={() => {
+                if (lifecycleState === "REVIEW" || lifecycleState === "PREFLIGHT_FAILED" || lifecycleState === "READY_TO_SIGN") {
+                  setActionMode("REDEEM");
+                }
+              }}
+              disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED"].includes(lifecycleState)}
+              className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                actionMode === "REDEEM"
+                  ? "bg-white text-slate-900 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <ArrowDownLeft className="w-3.5 h-3.5 text-emerald-600" />
+              <span>인출 / 상환 (Redeem)</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Visual Progress Stepper */}
         <div className="bg-slate-50 px-6 py-3 border-b border-slate-200/80">
           <div className="flex items-center justify-between text-xs font-semibold">
             <div className={`flex items-center gap-1.5 ${currentStepNum >= 1 ? "text-slate-900" : "text-slate-400"}`}>
@@ -309,12 +401,14 @@ export function ExecutionModal({
 
         {/* Modal Body */}
         <div className="p-6 space-y-5 overflow-y-auto flex-1">
-          {/* Action Overview Box (Simple, Trustworthy) */}
+          {/* Action Overview Box */}
           <div className="rounded-2xl bg-slate-50 border border-slate-200/90 p-5 space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-200/80">
               <span className="text-xs font-semibold text-slate-500">실행 대상 작업</span>
               <span className="text-xs font-bold text-slate-900 font-mono bg-white border border-slate-200 px-3 py-1 rounded-lg shadow-2xs">
-                JustLend Supply ({depositAmount} TRX)
+                {actionMode === "SUPPLY"
+                  ? `JustLend Supply (${supplyAmount} TRX)`
+                  : `JustLend Redeem (${redeemAmount} jTRX)`}
               </span>
             </div>
 
@@ -328,9 +422,17 @@ export function ExecutionModal({
                 <span className="text-purple-700 font-semibold text-sm">Nile Testnet</span>
               </div>
               <div>
-                <span className="text-slate-400 block text-[11px]">현재 지갑 잔고</span>
-                <span className={`font-mono font-bold text-sm ${isInsufficientTrx ? "text-amber-600" : "text-slate-900"}`}>
-                  {isDemoMode ? "500.00 TRX" : `${trxBalance} TRX`}
+                <span className="text-slate-400 block text-[11px]">
+                  {actionMode === "SUPPLY" ? "현재 TRX 잔고" : "보유 jTRX 수량"}
+                </span>
+                <span className="font-mono font-bold text-sm text-slate-900">
+                  {actionMode === "SUPPLY"
+                    ? isDemoMode
+                      ? "500.00 TRX"
+                      : `${trxBalance} TRX`
+                    : isDemoMode
+                    ? "250.00 jTRX"
+                    : `${jTrxBalance} jTRX`}
                 </span>
               </div>
               <div>
@@ -339,58 +441,68 @@ export function ExecutionModal({
               </div>
             </div>
 
-            {/* Deposit Amount Adjuster */}
+            {/* Amount Adjuster */}
             <div className="pt-3 border-t border-slate-200/80 flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-600">예치 수량 입력:</span>
+              <span className="text-xs font-semibold text-slate-600">
+                {actionMode === "SUPPLY" ? "예치 수량 입력:" : "상환 수량 입력:"}
+              </span>
               <div className="flex items-center gap-2">
                 <input
                   type="number"
                   disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED"].includes(lifecycleState)}
-                  value={depositAmount}
-                  onChange={(e) => setDepositAmount(e.target.value)}
+                  value={actionMode === "SUPPLY" ? supplyAmount : redeemAmount}
+                  onChange={(e) =>
+                    actionMode === "SUPPLY"
+                      ? setSupplyAmount(e.target.value)
+                      : setRedeemAmount(e.target.value)
+                  }
                   className="w-28 bg-white border border-slate-300 text-slate-900 font-mono font-bold text-sm rounded-xl px-3 py-2 text-right focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 shadow-2xs"
                 />
-                <span className="text-xs font-bold text-slate-700">TRX</span>
+                <span className="text-xs font-bold text-slate-700">
+                  {actionMode === "SUPPLY" ? "TRX" : "jTRX"}
+                </span>
               </div>
             </div>
           </div>
 
-          {/* Insufficient Balance Alert & Nile Faucet Link */}
-          {isInsufficientTrx && (
+          {/* Insufficient Balance Alert */}
+          {isInsufficientFunds && (
             <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs space-y-3 animate-in fade-in">
               <div className="flex items-start gap-2.5">
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <strong className="text-amber-900 font-bold block text-sm">
-                    Nile TRX 잔고가 부족합니다
+                    {actionMode === "SUPPLY" ? "Nile TRX 잔고가 부족합니다" : "상환할 jTRX 포지션이 부족합니다"}
                   </strong>
                   <p className="text-amber-800 text-xs mt-1 leading-relaxed">
-                    지갑 잔고({preflight.currentBalanceTrx} TRX)가 부족합니다.
-                    예치금({depositAmount} TRX) 및 온체인 수수료 버퍼(20 TRX)를 합산하여 총{" "}
-                    <strong>{preflight.requiredTotalTrx} TRX</strong>가 필요합니다.
+                    {actionMode === "SUPPLY"
+                      ? `지갑 잔고(${preflight.currentBalanceTrx} TRX)가 부족합니다. 예치금 및 수수료 버퍼를 위해 총 ${preflight.requiredTotalTrx} TRX가 필요합니다.`
+                      : `상환을 진행하려면 먼저 JustLend에 TRX를 예치(Supply)하여 jTRX 토큰을 보유하고 있어야 합니다.`}
                   </p>
                 </div>
               </div>
 
-              <div className="pt-1 flex items-center justify-between">
-                <span className="text-[11px] text-amber-700">
-                  Nile 공식 Faucet에서 무료 테스트 TRX를 받아보세요.
-                </span>
-                <a
-                  href="https://nileex.io/join/getJoinPage"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg shadow-2xs transition-colors"
-                >
-                  <Droplets className="w-3.5 h-3.5" />
-                  <span>무료 TRX 받기</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-              </div>
+              {actionMode === "SUPPLY" && (
+                <div className="pt-1 flex items-center justify-between">
+                  <span className="text-[11px] text-amber-700">
+                    Nile 공식 Faucet에서 무료 테스트 TRX를 받아보세요.
+                  </span>
+                  <a
+                    href="https://nileex.io/join/getJoinPage"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg shadow-2xs transition-colors"
+                  >
+                    <Droplets className="w-3.5 h-3.5" />
+                    <span>무료 TRX 받기</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Collapsible Technical Details (Behind Accordion) */}
+          {/* Technical Details Accordion */}
           <div className="rounded-2xl border border-slate-200 bg-slate-50 overflow-hidden text-xs">
             <button
               onClick={() => setIsTechnicalExpanded(!isTechnicalExpanded)}
@@ -419,8 +531,8 @@ export function ExecutionModal({
                   <span className="text-emerald-700 font-mono text-[11px] font-semibold">{preview.method}</span>
                 </div>
                 <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                  <span className="text-slate-400 text-[11px]">전송 단위 (CallValue)</span>
-                  <span className="text-slate-700 font-mono text-[11px]">{preview.amountRaw} sun</span>
+                  <span className="text-slate-400 text-[11px]">전송 파라미터</span>
+                  <span className="text-slate-700 font-mono text-[11px]">{preview.amountRaw}</span>
                 </div>
                 <div className="flex items-center justify-between py-1">
                   <span className="text-slate-400 text-[11px]">수수료 한도 (FeeLimit)</span>
@@ -430,20 +542,20 @@ export function ExecutionModal({
             )}
           </div>
 
-          {/* User Confirmation Checkbox (Only if not yet confirmed) */}
+          {/* User Confirmation Checkbox */}
           {lifecycleState !== "CONFIRMED" && (
             <div className="p-4 rounded-2xl bg-purple-50/70 border border-purple-200/80 flex items-start gap-3">
               <input
                 type="checkbox"
                 id="auth-check"
-                disabled={isInsufficientTrx || ["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING"].includes(lifecycleState)}
+                disabled={isInsufficientFunds || ["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING"].includes(lifecycleState)}
                 checked={hasAuthorized}
                 onChange={(e) => setHasAuthorized(e.target.checked)}
                 className="mt-0.5 rounded border-slate-300 text-purple-600 focus:ring-purple-500 w-4 h-4 cursor-pointer disabled:opacity-50"
               />
               <label htmlFor="auth-check" className="text-xs text-purple-900 cursor-pointer select-none leading-relaxed font-medium">
                 <strong>명시적 실행 동의: </strong>
-                Nile 테스트넷 상의 {depositAmount} TRX 예치 트랜잭션 내용을 확인하였으며, 지갑 서명을 진행하는 데 동의합니다.
+                Nile 테스트넷 상의 {actionMode === "SUPPLY" ? `${supplyAmount} TRX 예치` : `${redeemAmount} jTRX 인출/상환`} 트랜잭션 내용을 확인하였으며, 지갑 서명을 진행하는 데 동의합니다.
               </label>
             </div>
           )}
@@ -465,7 +577,7 @@ export function ExecutionModal({
                 <Loader2 className="w-4 h-4 animate-spin shrink-0 mt-0.5 text-blue-600" />
               ) : lifecycleState === "CONFIRMED" ? (
                 <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-              ) : lifecycleState === "PREFLIGHT_FAILED" || isInsufficientTrx ? (
+              ) : lifecycleState === "PREFLIGHT_FAILED" || isInsufficientFunds ? (
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               ) : (
                 <ShieldCheck className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
@@ -518,7 +630,7 @@ export function ExecutionModal({
                 lifecycleState !== "READY_TO_SIGN" ||
                 !hasAuthorized ||
                 !preflight.ready ||
-                isInsufficientTrx
+                isInsufficientFunds
               }
               className="bg-slate-900 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-xs px-6 py-3 rounded-xl flex items-center gap-2 shadow-xs transition-all active:scale-[0.98] cursor-pointer"
             >

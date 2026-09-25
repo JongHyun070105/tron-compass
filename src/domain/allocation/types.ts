@@ -1,6 +1,12 @@
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
 export type Goal = "LIQUIDITY" | "BALANCED" | "YIELD";
 
+export type ExecutabilityClass =
+  | "NILE_EXECUTABLE"
+  | "LIVE_DATA_ONLY"
+  | "SIMULATABLE"
+  | "UNSUPPORTED_FOR_EXECUTION";
+
 export interface Holding {
   asset: string;
   amount: string; // Decimal-safe string
@@ -18,6 +24,7 @@ export interface NeedsProfile {
   allowedAssets?: string[];
   excludedAssets?: string[];
 
+  protectionClause?: string; // e.g. "여행비 $300은 운용 대상에서 제외"
   missingFields: string[];
   assumptions: string[];
 }
@@ -53,6 +60,8 @@ export interface YieldOpportunity {
   estimatedExitCostUsd: string;
 
   executable: boolean;
+  executabilityClass: ExecutabilityClass;
+  executabilityLabel: string;
   executionNetwork?: "NILE" | null;
   nileContractAddress?: string;
 
@@ -83,6 +92,8 @@ export interface AllocationLeg {
   netYieldEstimateUsd: string;
 
   executable: boolean;
+  executabilityClass: ExecutabilityClass;
+  executabilityLabel: string;
   executionNetwork?: "NILE" | null;
   targetContract?: string;
 }
@@ -123,6 +134,7 @@ export interface AllocationPlan {
   risks: string[];
   exitConditions: string[];
   assumptions: string[];
+  deterministicReasons: string[];
   sourceSnapshotIds: string[];
 
   constraintChecks: ConstraintCheckResult[];

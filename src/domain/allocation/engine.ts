@@ -7,6 +7,8 @@ import {
 import { evaluateHardConstraints } from "./constraints";
 import { decomposeLegYield } from "@/lib/math/yield";
 import { Decimal, SafeMath, toDecimal, toPercentString } from "@/lib/math/decimal";
+import { evaluateUsddDecisionSignal, UsddDecisionSignal } from "./usdd-signals";
+import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
 
 const ASSET_PRICE_USD: Record<string, string> = {
   USDD: "1.00",
@@ -41,22 +43,40 @@ export function computeTotalCapitalUsd(profile: NeedsProfile): string {
 export function generateAllocationPlans(
   profile: NeedsProfile,
   opportunities: YieldOpportunity[],
-  timestamp: string = new Date().toISOString()
+  timestamp: string = new Date().toISOString(),
+  usddEvidence?: UsddProtocolEvidence | null
 ): {
   plans: AllocationPlan[];
   totalCapitalUsd: string;
+  usddSignal: UsddDecisionSignal;
 } {
   const totalCapitalUsd = computeTotalCapitalUsd(profile);
   const totalCap = toDecimal(totalCapitalUsd);
   const minLiquid = toDecimal(profile.minimumLiquidUsd || "0");
   const maxAllocatable = totalCap.minus(minLiquid);
 
-  // Active opportunities sorted by net yield
-  const activeOpps = opportunities.filter(
-    (o) =>
-      toDecimal(o.totalApy).gte(0) &&
-      !(profile.excludedAssets || []).includes(o.asset)
-  );
+  // Evaluate verified USDD decision signal
+  const usddSignal = evaluateUsddDecisionSignal(usddEvidence);
+
+  // Active opportunities with USDD signal adjustments
+  const activeOpps = opportunities
+    .filter(
+      (o) =>
+        toDecimal(o.totalApy).gte(0) &&
+        !(profile.excludedAssets || []).includes(o.asset)
+    )
+    .map((o) => {
+      if (o.asset === "USDD") {
+        return {
+          ...o,
+          priceRiskClass: usddSignal.priceRiskClass,
+          warnings: usddSignal.warningNotice
+            ? [...o.warnings, usddSignal.warningNotice]
+            : o.warnings,
+        };
+      }
+      return o;
+    });
 
   const horizonDays = profile.horizonDays > 0 ? profile.horizonDays : 90;
 
@@ -64,15 +84,25 @@ export function generateAllocationPlans(
   // Plan A: Liquidity-First Plan
   // -------------------------------------------------------------
   const planAAllocations: AllocationLeg[] = [];
-  // Allocate up to 50% of available capital or maxAllocatable, whichever is smaller
+  // Allocate up to 50% of available capital or maxAllocatable, whichever is smaller.
+  // If maxAllocatable <= 0 (e.g. 100% liquidity required), target cap is strictly 0.
   const planATargetCap = SafeMath.gt(maxAllocatable, 0)
     ? Decimal.min(maxAllocatable, totalCap.times(0.50))
     : toDecimal(0);
 
   let planARemaining = planATargetCap;
+  const maxVolatileBudgetA = totalCap.times(
+    toDecimal(profile.maxVolatileExposurePct || "0.20")
+  );
+  let volatileUsedA = toDecimal(0);
 
   for (const h of profile.holdings) {
     if (planARemaining.lte(0)) break;
+    // If USDD is ineligible for conservative Plan A due to collateral signal, skip it
+    if (h.asset === "USDD" && !usddSignal.eligibleForConservativePlan) {
+      continue;
+    }
+
     const price = toDecimal(getAssetPriceUsd(h.asset));
     const holdingVal = toDecimal(h.amount).times(price);
 
@@ -82,9 +112,22 @@ export function generateAllocationPlans(
 
     if (!opp) continue;
 
+    const isVolatile = opp.priceRiskClass !== "LOW";
+    let maxAllowedForLeg = holdingVal.times(0.70);
+
+    if (isVolatile) {
+      const remainingVolBudget = maxVolatileBudgetA.minus(volatileUsedA);
+      if (remainingVolBudget.lte(0)) continue;
+      maxAllowedForLeg = Decimal.min(maxAllowedForLeg, remainingVolBudget);
+    }
+
     // Allocate conservative portion
-    const allocVal = Decimal.min(planARemaining, holdingVal.times(0.70));
+    const allocVal = Decimal.min(planARemaining, maxAllowedForLeg);
     if (allocVal.lte(0)) continue;
+
+    if (isVolatile) {
+      volatileUsedA = volatileUsedA.plus(allocVal);
+    }
 
     const allocAmount = allocVal.div(price);
     const decomp = decomposeLegYield(
@@ -114,6 +157,8 @@ export function generateAllocationPlans(
       estimatedCostUsd: decomp.totalCostUsd,
       netYieldEstimateUsd: decomp.netYieldUsd,
       executable: opp.executable,
+      executabilityClass: opp.executabilityClass || (opp.executable ? "NILE_EXECUTABLE" : "LIVE_DATA_ONLY"),
+      executabilityLabel: opp.executabilityLabel || (opp.executable ? "실행 가능 (Nile에서 직접 테스트 가능)" : "분석 전용 (Mainnet 시장 데이터 기반)"),
       executionNetwork: opp.executionNetwork,
       targetContract: opp.nileContractAddress || opp.contractAddress,
     });
@@ -137,6 +182,11 @@ export function generateAllocationPlans(
   // Sort holdings to prioritize higher APY opportunities
   for (const h of profile.holdings) {
     if (planBRemaining.lte(0)) break;
+    // If USDD is flagged as critical, skip yield allocation
+    if (h.asset === "USDD" && !usddSignal.eligibleForYieldPlan) {
+      continue;
+    }
+
     const price = toDecimal(getAssetPriceUsd(h.asset));
     const holdingVal = toDecimal(h.amount).times(price);
 
@@ -188,6 +238,8 @@ export function generateAllocationPlans(
       estimatedCostUsd: decomp.totalCostUsd,
       netYieldEstimateUsd: decomp.netYieldUsd,
       executable: opp.executable,
+      executabilityClass: opp.executabilityClass || (opp.executable ? "NILE_EXECUTABLE" : "LIVE_DATA_ONLY"),
+      executabilityLabel: opp.executabilityLabel || (opp.executable ? "실행 가능 (Nile에서 직접 테스트 가능)" : "분석 전용 (Mainnet 시장 데이터 기반)"),
       executionNetwork: opp.executionNetwork,
       targetContract: opp.nileContractAddress || opp.contractAddress,
     });
@@ -195,15 +247,15 @@ export function generateAllocationPlans(
     planBRemaining = planBRemaining.minus(allocVal);
   }
 
-  // Helper to compile plan metrics
+  // Helper to compile plan metrics and deterministic reasons
   const compilePlan = (
     id: string,
     label: string,
     strategyType: "LIQUIDITY_FIRST" | "YIELD_ORIENTED",
     description: string,
     allocations: AllocationLeg[],
-    liquidityScore: number,
-    riskScore: number
+    baseLiquidityScore: number,
+    baseRiskScore: number
   ): AllocationPlan => {
     let totalAlloc = toDecimal(0);
     let totalBaseYield = toDecimal(0);
@@ -240,6 +292,23 @@ export function generateAllocationPlans(
           .toFixed(4)
       : "0.0000";
 
+    // Build concise, deterministic reasons
+    const deterministicReasons: string[] = [
+      allocations.length === 0
+        ? "사용자 요청으로 전체 자본을 100% 무위험 상시 비상금으로 보존합니다."
+        : `요청하신 $${minLiquid.toFixed(0)} 이상의 비상금($${liquidReserve.toFixed(0)})을 상시 인출 가능하게 100% 보존합니다`,
+      profile.protectionClause
+        ? `보호 조건 준수: ${profile.protectionClause}`
+        : `변동성 자산(TRX) 노출을 최대 허용치(${(parseFloat(profile.maxVolatileExposurePct || "0.20") * 100).toFixed(0)}%) 이내로 엄격히 제한했습니다`,
+      "모든 편입 포지션의 락업 기간이 0일로 시장 유동성에 따라 상시 회수 가능합니다",
+      usddSignal.reason,
+      strategyType === "LIQUIDITY_FIRST"
+        ? "원금 방어와 즉각적 유동성을 최우선으로 하여 저위험 렌딩 풀에 안전하게 배분했습니다"
+        : "안전 마진을 유지한 상태에서 JustLend 인센티브 마이닝을 복합 배분하여 복리 수익을 극대화합니다",
+    ];
+
+    const adjustedRiskScore = Math.max(1, Math.min(100, baseRiskScore - usddSignal.scoreBonus));
+
     return {
       id,
       label,
@@ -256,8 +325,8 @@ export function generateAllocationPlans(
       estimatedTotalCostUsd: totalCosts.toFixed(2),
       expectedNetYieldUsd: totalNetYield.toFixed(2),
       effectiveNetApy: toPercentString(netApy),
-      liquidityScore,
-      riskScore,
+      liquidityScore: baseLiquidityScore,
+      riskScore: adjustedRiskScore,
       risks:
         strategyType === "LIQUIDITY_FIRST"
           ? [
@@ -277,6 +346,7 @@ export function generateAllocationPlans(
         "Base lending APY compounds continuously with block-level utilization",
         "Ecosystem mining rewards remain active during estimated holding period",
       ],
+      deterministicReasons,
       sourceSnapshotIds: opportunities.map((o) => o.id),
       constraintChecks: constraintEval.checks,
     };
@@ -305,5 +375,6 @@ export function generateAllocationPlans(
   return {
     plans: [planA, planB],
     totalCapitalUsd,
+    usddSignal,
   };
 }

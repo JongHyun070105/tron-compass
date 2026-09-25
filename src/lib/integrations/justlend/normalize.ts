@@ -106,6 +106,10 @@ export function normalizeJustLendToken(
     estimatedExitCostUsd: "0.20",
 
     executable: isNileSupported,
+    executabilityClass: isNileSupported ? "NILE_EXECUTABLE" : "LIVE_DATA_ONLY",
+    executabilityLabel: isNileSupported
+      ? "실행 가능 (Nile에서 직접 테스트 가능)"
+      : "분석 전용 (Mainnet 시장 데이터 기반)",
     executionNetwork: isNileSupported ? "NILE" : null,
     nileContractAddress: nileAddress,
 

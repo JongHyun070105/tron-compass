@@ -5,7 +5,7 @@ import { NeedsProfile, AllocationPlan } from "@/domain/allocation/types";
 export class GeminiLLMProvider implements LLMProvider {
   private apiKey: string;
   private fallback: MockLLMProvider;
-  private timeoutMs: number = 28000; // 28s timeout for reliable live inference
+  private timeoutMs: number = 8000; // 8s timeout to prevent slow latency in demo loop
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || process.env.GEMINI_API_KEY || "";
@@ -40,6 +40,7 @@ You MUST output valid JSON matching this schema:
   "goal": "LIQUIDITY" | "BALANCED" | "YIELD",
   "allowedAssets": string[],
   "excludedAssets": string[],
+  "protectionClause": string (concise phrase if user specifies an excluded purpose or protection, e.g. "여행비 $300은 운용 대상에서 제외"),
   "missingFields": string[] (list any critical missing fields such as horizon or liquidity),
   "followUpQuestion": string (concise question in Korean if critical fields are missing),
   "summary": string (concise 2-sentence summary in Korean of confirmed profile)
@@ -101,6 +102,7 @@ Respond ONLY with the JSON object.`;
         goal: parsed.goal ?? "BALANCED",
         allowedAssets: parsed.allowedAssets,
         excludedAssets: parsed.excludedAssets,
+        protectionClause: parsed.protectionClause,
         missingFields: parsed.missingFields,
         assumptions: [
           `투자 기간 ${parsed.horizonDays ?? 90}일 기준 복리 수익 추정`,

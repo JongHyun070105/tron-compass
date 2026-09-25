@@ -93,6 +93,7 @@ describe("AI Needs Analysis Layer", () => {
           assumptions: [],
           sourceSnapshotIds: [],
           constraintChecks: [],
+          deterministicReasons: [],
         },
         {
           id: "plan-b",
@@ -117,6 +118,7 @@ describe("AI Needs Analysis Layer", () => {
           assumptions: [],
           sourceSnapshotIds: [],
           constraintChecks: [],
+          deterministicReasons: [],
         },
       ],
     });

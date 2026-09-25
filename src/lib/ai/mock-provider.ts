@@ -115,6 +115,11 @@ export class MockLLMProvider implements LLMProvider {
 
     const summary = `총 ${holdings.map((h) => `${h.amount} ${h.asset}`).join(" 및 ")} 자산을 기반으로 ${horizonDays}일 동안 운용하며, 최소 $${minimumLiquidUsd}의 상시 유동성을 보존하는 ${riskLevel} 위험 수준의 플랜을 구성했습니다.`;
 
+    let protectionClause: string | undefined = undefined;
+    if (text.includes("여행") || text.includes("남겨") || text.includes("비상금")) {
+      protectionClause = `지정 자금 $${minimumLiquidUsd}은 운용 대상에서 전액 제외`;
+    }
+
     const profile: NeedsProfile = {
       holdings,
       horizonDays,
@@ -122,6 +127,7 @@ export class MockLLMProvider implements LLMProvider {
       riskLevel,
       maxVolatileExposurePct,
       goal,
+      protectionClause,
       missingFields,
       assumptions: [
         `투자 기간 ${horizonDays}일 기준 복리 수익 추정`,
