@@ -22,6 +22,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       data: result,
+      provider: result.provider || "mock_fallback",
+      model: result.provider === "gemini" ? "gemini-2.5-flash" : "rules-engine",
     });
   } catch (err) {
     return NextResponse.json(

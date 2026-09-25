@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildPreflightChecks,
   prepareJTrxSupplyPreview,
+  determineTransactionState,
 } from "../src/lib/tron/transaction";
 import { JUSTLEND_NILE_CONTRACTS } from "../src/lib/integrations/justlend/contracts";
 
@@ -64,6 +65,68 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
       (c) => c.key === "BALANCE_SUFFICIENT"
     );
     expect(balanceCheck?.passed).toBe(false);
+  });
+
+  it("strictly fails preflight check when connected Nile wallet has 0 TRX", () => {
+    const result = buildPreflightChecks({
+      isWalletConnected: true,
+      walletAddress: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+      currentNetwork: "nile",
+      trxBalance: "0.00",
+      requiredAmount: "50.00",
+      asset: "TRX",
+    });
+
+    expect(result.ready).toBe(false);
+    const balanceCheck = result.checks.find(
+      (c) => c.key === "BALANCE_SUFFICIENT"
+    );
+    expect(balanceCheck?.passed).toBe(false);
+    expect(result.currentBalanceTrx).toBe("0.00");
+    expect(result.requiredTotalTrx).toBe("70.00");
+  });
+
+  it("determines correct transaction state across the lifecycle", () => {
+    // 1. Failed preflight -> PREFLIGHT_FAILED
+    expect(
+      determineTransactionState({
+        preflightReady: false,
+        hasAuthorized: false,
+      })
+    ).toBe("PREFLIGHT_FAILED");
+
+    // 2. Preflight passed but unauthorized -> REVIEW
+    expect(
+      determineTransactionState({
+        preflightReady: true,
+        hasAuthorized: false,
+      })
+    ).toBe("REVIEW");
+
+    // 3. Preflight passed and user authorized -> READY_TO_SIGN
+    expect(
+      determineTransactionState({
+        preflightReady: true,
+        hasAuthorized: true,
+      })
+    ).toBe("READY_TO_SIGN");
+
+    // 4. Preserves active execution states (SIGNING, BROADCASTING, CONFIRMED, etc.)
+    expect(
+      determineTransactionState({
+        preflightReady: true,
+        hasAuthorized: true,
+        currentExecutionState: "AWAITING_WALLET_SIGNATURE",
+      })
+    ).toBe("AWAITING_WALLET_SIGNATURE");
+
+    expect(
+      determineTransactionState({
+        preflightReady: true,
+        hasAuthorized: true,
+        currentExecutionState: "CONFIRMED",
+      })
+    ).toBe("CONFIRMED");
   });
 
   it("generates correct execution preview for jTRX supply with verified Nile contract", () => {

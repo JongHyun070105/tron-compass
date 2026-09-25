@@ -9,6 +9,12 @@ export interface SavedPlanRecord {
   marketSnapshot: YieldOpportunity[];
 }
 
+export type CompassDataScope =
+  | "DEMO"
+  | "LIVE_NILE"
+  | "LIVE_MAINNET"
+  | "SIMULATED_REPLAY";
+
 export interface ExecutionRecord {
   id: string;
   planId: string;
@@ -18,6 +24,8 @@ export interface ExecutionRecord {
   amount: string;
   targetContract: string;
   network: "NILE";
+  dataScope: CompassDataScope;
+  isDemo?: boolean;
   status: "BROADCASTED" | "CONFIRMED" | "FAILED";
   timestamp: string;
 }
@@ -100,6 +108,38 @@ class CompassStorageService {
       }
     }
     return Array.from(this.memoryExecutions.values());
+  }
+
+  async getExecutions(params: {
+    walletAddress?: string;
+    dataScope?: CompassDataScope;
+    isDemo?: boolean;
+  }): Promise<ExecutionRecord[]> {
+    const all = await this.getAllExecutions();
+    return all.filter((e) => {
+      if (params.walletAddress && e.walletAddress !== params.walletAddress) {
+        return false;
+      }
+      if (params.dataScope && e.dataScope !== params.dataScope) {
+        return false;
+      }
+      if (typeof params.isDemo === "boolean" && Boolean(e.isDemo) !== params.isDemo) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  async clearDemoExecutions(): Promise<void> {
+    const all = await this.getAllExecutions();
+    const realOnly = all.filter((e) => !e.isDemo && e.dataScope !== "DEMO");
+    this.memoryExecutions.clear();
+    for (const r of realOnly) {
+      this.memoryExecutions.set(r.id, r);
+    }
+    if (this.isBrowser()) {
+      localStorage.setItem(STORAGE_KEY_EXECUTIONS, JSON.stringify(realOnly));
+    }
   }
 
   // --- Rebalance Logs ---

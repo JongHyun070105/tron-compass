@@ -14,7 +14,12 @@ export async function POST(request: Request) {
         triggerReason,
         currentMarketChange,
       });
-      return NextResponse.json({ success: true, data: result });
+      return NextResponse.json({
+        success: true,
+        data: result,
+        provider: result.provider || "mock_fallback",
+        model: result.provider === "gemini" ? "gemini-2.5-flash" : "rules-engine",
+      });
     }
 
     // Default: EXPLAIN_PLANS
@@ -22,7 +27,12 @@ export async function POST(request: Request) {
       profile,
       plans,
     });
-    return NextResponse.json({ success: true, data: result });
+    return NextResponse.json({
+      success: true,
+      data: result,
+      provider: result.provider || "mock_fallback",
+      model: result.provider === "gemini" ? "gemini-2.5-flash" : "rules-engine",
+    });
   } catch (err) {
     return NextResponse.json(
       {

@@ -34,6 +34,7 @@ export function ReplayMonitor({
   const [simulatedOpps, setSimulatedOpps] = useState<YieldOpportunity[]>(liveOpportunities);
   const [aiRebalanceAdvice, setAiRebalanceAdvice] = useState<string | null>(null);
   const [isExplaining, setIsExplaining] = useState<boolean>(false);
+  const scenarioCacheRef = React.useRef<Record<string, string>>({});
 
   if (!originalPlan || !profile) {
     return (
@@ -54,10 +55,16 @@ export function ReplayMonitor({
     setActiveScenarioId(scenario.id);
     const updated = scenario.simulatedMarketDelta(liveOpportunities);
     setSimulatedOpps(updated);
-    setAiRebalanceAdvice(null);
 
-    // Call AI rebalance explanation
+    // If cached in ref, reuse without network call
+    if (scenarioCacheRef.current[scenario.id]) {
+      setAiRebalanceAdvice(scenarioCacheRef.current[scenario.id]);
+      return;
+    }
+
+    setAiRebalanceAdvice(null);
     setIsExplaining(true);
+
     try {
       const res = await fetch("/api/ai/explain", {
         method: "POST",
@@ -71,13 +78,15 @@ export function ReplayMonitor({
       });
       const data = await res.json();
       if (data.success && data.data) {
-        setAiRebalanceAdvice(data.data.explanation + " " + data.data.actionAdvice);
+        const advice = data.data.explanation + " " + data.data.actionAdvice;
+        scenarioCacheRef.current[scenario.id] = advice;
+        setAiRebalanceAdvice(advice);
       }
     } catch {
-      // Fallback
-      setAiRebalanceAdvice(
-        "시장 조건 변화에 따른 예상 APY 하락이 감지되었습니다. 원금 안전과 목표 유동성 유지를 위해 신규 조건 플랜으로 리밸런싱을 권고합니다."
-      );
+      const fallback =
+        "시장 조건 변화에 따른 예상 APY 하락이 감지되었습니다. 원금 안전과 목표 유동성 유지를 위해 신규 조건 플랜으로 리밸런싱을 권고합니다.";
+      scenarioCacheRef.current[scenario.id] = fallback;
+      setAiRebalanceAdvice(fallback);
     } finally {
       setIsExplaining(false);
     }

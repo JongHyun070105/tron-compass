@@ -24,3 +24,14 @@ export const ExtractedProfileSchema = z.object({
 });
 
 export type ExtractedProfile = z.infer<typeof ExtractedProfileSchema>;
+
+export const PlanExplanationSchema = z.object({
+  planAHighlights: z.array(z.string()).default([]),
+  planBHighlights: z.array(z.string()).default([]),
+  recommendationSummary: z.string().default(""),
+  planAExplanation: z.string().default(""),
+  planBExplanation: z.string().default(""),
+  comparisonRecommendation: z.string().default(""),
+});
+
+export type PlanExplanation = z.infer<typeof PlanExplanationSchema>;

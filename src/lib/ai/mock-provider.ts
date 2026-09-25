@@ -1,4 +1,4 @@
-import { ExtractedProfile } from "./schemas";
+import { ExtractedProfile, PlanExplanation } from "./schemas";
 import { NeedsProfile, AllocationPlan } from "@/domain/allocation/types";
 
 export interface LLMProvider {
@@ -11,16 +11,13 @@ export interface LLMProvider {
     needsClarification: boolean;
     followUpQuestion?: string;
     summary: string;
+    provider?: "gemini" | "mock_fallback";
   }>;
 
   explainPlans(input: {
     profile: NeedsProfile;
     plans: AllocationPlan[];
-  }): Promise<{
-    planAExplanation: string;
-    planBExplanation: string;
-    comparisonRecommendation: string;
-  }>;
+  }): Promise<PlanExplanation & { provider?: "gemini" | "mock_fallback" }>;
 
   explainRebalance(input: {
     originalPlan: AllocationPlan;
@@ -29,18 +26,21 @@ export interface LLMProvider {
   }): Promise<{
     explanation: string;
     actionAdvice: string;
+    provider?: "gemini" | "mock_fallback";
   }>;
 }
 
 export class MockLLMProvider implements LLMProvider {
   async extractNeeds(input: {
     userInput: string;
+    conversationHistory?: Array<{ role: "user" | "assistant"; content: string }>;
     walletHoldings?: Array<{ asset: string; amount: string }>;
   }): Promise<{
     profile: NeedsProfile;
     needsClarification: boolean;
     followUpQuestion?: string;
     summary: string;
+    provider: "mock_fallback";
   }> {
     const text = input.userInput.toLowerCase();
 
@@ -134,22 +134,42 @@ export class MockLLMProvider implements LLMProvider {
       needsClarification,
       followUpQuestion,
       summary,
+      provider: "mock_fallback" as const,
     };
   }
 
   async explainPlans(input: {
     profile: NeedsProfile;
     plans: AllocationPlan[];
-  }): Promise<{
-    planAExplanation: string;
-    planBExplanation: string;
-    comparisonRecommendation: string;
-  }> {
+  }): Promise<PlanExplanation & { provider: "mock_fallback" }> {
     const [planA, planB] = input.plans;
+    const planALiquid = planA?.liquidReserveUsd || input.profile.minimumLiquidUsd || "300";
+    const planBLiquid = planB?.liquidReserveUsd || input.profile.minimumLiquidUsd || "300";
+
+    const volatileLegA = planA?.allocations.find((a) => a.asset === "TRX");
+    const planAVolatile = volatileLegA ? (parseFloat(volatileLegA.allocationPct) * 100).toFixed(1) : "3.3";
+
+    const volatileLegB = planB?.allocations.find((a) => a.asset === "TRX");
+    const planBVolatile = volatileLegB ? (parseFloat(volatileLegB.allocationPct) * 100).toFixed(1) : "13.3";
+
     return {
+      planAHighlights: [
+        `상시 유동성 $${planALiquid} 즉시 인출 보존 (${planA?.liquidReservePct || "50%"})`,
+        `변동성 자산(TRX) 노출을 ${planAVolatile}%로 엄격히 제한`,
+        "락업 없는 JustLend 코어 풀 공급으로 원금 손실 위험 차단",
+        "보수적 리스크 성향에 맞춘 최적의 방어형 자본 배분",
+      ],
+      planBHighlights: [
+        `필수 유동성 $${planBLiquid} 상시 확보 후 자본 가동률 극대화`,
+        `변동성 자산 노출을 ${planBVolatile}% 이내로 안전하게 제어`,
+        "JustLend 및 USDD 인센티브 마이닝 복합 배분으로 연수익 극대화",
+        `약정 기간(${input.profile.horizonDays}일) 동안 안정적 복리 수익 누적 추구`,
+      ],
+      recommendationSummary: `단기 자금 인출 가능성이 있다면 유동성 방어 중심의 ${planA?.label || "Plan A"}를, 약정 기간(${input.profile.horizonDays}일) 동안 수익 극대화를 원하신다면 ${planB?.label || "Plan B"}를 추천합니다.`,
       planAExplanation: `${planA?.label || "플랜 A"}는 요청하신 유동성 ($${input.profile.minimumLiquidUsd})을 초과하여 ${planA?.liquidReservePct || "50%"}의 자산을 즉시 인출 가능한 상태로 유지하며, 검증된 JustLend 코어 풀을 통해 원금 손실 위험을 최소화합니다.`,
       planBExplanation: `${planB?.label || "플랜 B"}는 하드 제약조건을 엄격히 준수하면서 남은 여유 자본을 USDD 생태계 인센티브 마이닝 및 jTRX 대출 풀에 최대 배분하여 예상 순수익을 극대화합니다.`,
-      comparisonRecommendation: `단기 자금 인출 가능성이 있다면 유동성 방어 중심의 ${planA?.label}을, 약정 기간(${input.profile.horizonDays}일) 동안 안정적인 수익 누적을 원하신다면 ${planB?.label}을 추천합니다.`,
+      comparisonRecommendation: `단기 자금 인출 가능성이 있다면 유동성 방어 중심의 ${planA?.label || "Plan A"}를, 약정 기간(${input.profile.horizonDays}일) 동안 안정적인 수익 누적을 원하신다면 ${planB?.label || "Plan B"}를 추천합니다.`,
+      provider: "mock_fallback" as const,
     };
   }
 
@@ -160,10 +180,12 @@ export class MockLLMProvider implements LLMProvider {
   }): Promise<{
     explanation: string;
     actionAdvice: string;
+    provider: "mock_fallback";
   }> {
     return {
       explanation: `초기 계획 수립 시점 대비 ${input.triggerReason} 요인이 감지되었습니다. (${input.currentMarketChange}) 이로 인해 기존 플랜의 예상 기대 수익률이 하락하고 유동성 조건이 변경되었습니다.`,
       actionAdvice: `현재 수익률이 저하된 포지션을 안전하게 상환(Redeem)하고, 더 높은 안정성과 인센티브를 제공하는 JustLend 신규 풀로 자산을 재배분하는 리밸런싱을 권장합니다.`,
+      provider: "mock_fallback" as const,
     };
   }
 }

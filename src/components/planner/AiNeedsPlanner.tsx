@@ -8,12 +8,12 @@ import {
   HelpCircle,
   SlidersHorizontal,
   CheckCircle,
-  Edit3,
   Calendar,
   DollarSign,
   Shield,
   Target,
   ArrowRight,
+  Loader2,
 } from "lucide-react";
 
 interface AiNeedsPlannerProps {
@@ -46,6 +46,7 @@ export function AiNeedsPlanner({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isManualMode, setIsManualMode] = useState(false);
   const [followUpQuestion, setFollowUpQuestion] = useState<string | null>(null);
+  const [lastProvider, setLastProvider] = useState<string | null>(null);
 
   // Editable local state for confirmed profile
   const [editableProfile, setEditableProfile] = useState<NeedsProfile>(
@@ -65,7 +66,7 @@ export function AiNeedsPlanner({
   );
 
   const handleAnalyze = async () => {
-    if (!inputText.trim()) return;
+    if (!inputText.trim() || isAnalyzing) return;
     setIsAnalyzing(true);
     setFollowUpQuestion(null);
 
@@ -82,6 +83,7 @@ export function AiNeedsPlanner({
       const data = await res.json();
       if (data.success && data.data) {
         setEditableProfile(data.data.profile);
+        setLastProvider(data.provider || "gemini");
         if (data.data.needsClarification && data.data.followUpQuestion) {
           setFollowUpQuestion(data.data.followUpQuestion);
         }
@@ -94,19 +96,26 @@ export function AiNeedsPlanner({
   };
 
   return (
-    <div className="bg-gray-900/70 border border-gray-800 rounded-2xl p-6 relative overflow-hidden">
+    <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-6 relative overflow-hidden space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3 mb-5">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 to-amber-500 flex items-center justify-center text-white">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 to-amber-500 flex items-center justify-center text-white shadow-md">
             <Sparkles className="w-4 h-4" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-white tracking-tight">
-              AI Needs Analysis & Goal Structuring
-            </h2>
-            <p className="text-xs text-gray-400">
-              자연어 투자 목표를 분석하여 결정론적 제약 조건(Needs Profile)으로 정형화합니다.
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-bold text-white tracking-tight">
+                AI 투자 목표 분석 및 제약조건 추출
+              </h2>
+              {lastProvider === "gemini" && (
+                <span className="text-[10px] bg-red-950/80 text-red-300 border border-red-800 px-2 py-0.5 rounded font-medium">
+                  Live Gemini 2.5 Flash
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-gray-400 mt-0.5">
+              자연어로 작성된 투자 목표를 분석하여 정량적 재무 제약 조건(Needs Profile)으로 정형화합니다.
             </p>
           </div>
         </div>
@@ -116,22 +125,22 @@ export function AiNeedsPlanner({
           className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 hover:bg-gray-800 text-gray-300 flex items-center gap-1.5 transition-colors"
         >
           <SlidersHorizontal className="w-3.5 h-3.5" />
-          {isManualMode ? "AI 대화 모드" : "수동 직접 설정"}
+          <span>{isManualMode ? "자연어 대화 모드" : "수동 직접 조정"}</span>
         </button>
       </div>
 
       {/* Preset Quick Chips */}
       {!isManualMode && (
-        <div className="mb-4">
-          <span className="text-[11px] text-gray-400 font-medium block mb-1.5">
-            빠른 데모 시나리오 프리셋:
+        <div className="space-y-1.5">
+          <span className="text-[11px] text-gray-400 font-medium block">
+            빠른 시나리오 프리셋 선택:
           </span>
           <div className="flex flex-wrap gap-2">
             {PRESET_PROMPTS.map((preset, idx) => (
               <button
                 key={idx}
                 onClick={() => setInputText(preset.text)}
-                className="text-xs px-3 py-1.5 rounded-lg bg-gray-800/80 hover:bg-gray-800 border border-gray-700/70 text-gray-300 hover:text-white transition-colors"
+                className="text-xs px-3 py-1.5 rounded-lg bg-gray-950 hover:bg-gray-800/80 border border-gray-800 text-gray-300 hover:text-white transition-colors"
               >
                 {preset.label}
               </button>
@@ -142,31 +151,40 @@ export function AiNeedsPlanner({
 
       {/* Natural Language Input Form */}
       {!isManualMode && (
-        <div className="relative mb-6">
+        <div className="relative">
           <textarea
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             rows={3}
-            className="w-full bg-gray-950 border border-gray-700/80 rounded-xl p-3.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-red-500 transition-colors resize-none"
-            placeholder="예: I have 1,000 USDD and some TRX. I want to invest for about 90 days, but at least $300 must remain liquid..."
+            className="w-full bg-gray-950 border border-gray-800 rounded-xl p-4 pr-28 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-red-500 transition-colors resize-none leading-relaxed"
+            placeholder="투자 목표를 입력해 주세요. 예: I have 1,000 USDD and some TRX. I want to invest for about 90 days, but at least $300 must remain liquid..."
           />
           <button
             onClick={handleAnalyze}
-            disabled={isAnalyzing}
-            className="absolute right-3 bottom-3 bg-red-600 hover:bg-red-500 text-white font-medium text-xs px-4 py-2 rounded-lg flex items-center gap-1.5 shadow transition-colors disabled:opacity-50"
+            disabled={isAnalyzing || !inputText.trim()}
+            className="absolute right-3 bottom-3 bg-red-600 hover:bg-red-500 text-white font-semibold text-xs px-4 py-2 rounded-lg flex items-center gap-1.5 shadow transition-colors disabled:opacity-50"
           >
-            <Send className="w-3.5 h-3.5" />
-            <span>{isAnalyzing ? "분석 중..." : "목표 분석"}</span>
+            {isAnalyzing ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>분석 중...</span>
+              </>
+            ) : (
+              <>
+                <Send className="w-3.5 h-3.5" />
+                <span>목표 분석</span>
+              </>
+            )}
           </button>
         </div>
       )}
 
       {/* Clarification Follow-up Question Banner */}
       {followUpQuestion && (
-        <div className="mb-6 p-4 rounded-xl bg-amber-950/40 border border-amber-800/60 text-amber-200 text-xs flex items-start gap-3">
-          <HelpCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+        <div className="p-4 rounded-xl bg-amber-950/40 border border-amber-800/60 text-amber-200 text-xs flex items-start gap-3">
+          <HelpCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
           <div className="flex-1">
-            <strong className="font-semibold block text-amber-300 mb-1">
+            <strong className="font-semibold block text-amber-300 mb-0.5">
               AI 제약조건 보완 질문:
             </strong>
             <p>{followUpQuestion}</p>
@@ -175,39 +193,39 @@ export function AiNeedsPlanner({
       )}
 
       {/* Confirmed Structured Needs Summary Card */}
-      <div className="bg-gray-950/80 border border-gray-800 rounded-xl p-5">
-        <div className="flex items-center justify-between mb-4 border-b border-gray-800/80 pb-3">
+      <div className="bg-gray-950/80 border border-gray-800 rounded-xl p-5 space-y-4">
+        <div className="flex items-center justify-between border-b border-gray-800/80 pb-3">
           <div className="flex items-center gap-2">
             <CheckCircle className="w-4 h-4 text-emerald-400" />
-            <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-              확정된 제약 조건 프로필 (Needs Summary)
+            <h3 className="text-sm font-bold text-white tracking-wide">
+              확정된 제약 조건 프로필 (Needs Profile)
             </h3>
           </div>
-          <span className="text-xs text-gray-400">
-            엔진 배분 시 하드 제약으로 적용됩니다
+          <span className="text-[11px] text-gray-500">
+            엔진 배분 시 하드 제약으로 엄격히 적용됩니다
           </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
           {/* Item 1: Holdings */}
-          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3">
-            <span className="text-xs text-gray-400 flex items-center gap-1 mb-1">
+          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3.5 space-y-1">
+            <span className="text-xs text-gray-400 flex items-center gap-1.5">
               <DollarSign className="w-3.5 h-3.5 text-blue-400" />
-              보유 자산 (Holdings)
+              <span>보유 자산</span>
             </span>
-            <div className="text-sm font-semibold text-white">
+            <div className="text-sm font-semibold text-white font-mono">
               {editableProfile.holdings.map((h) => `${h.amount} ${h.asset}`).join(" + ")}
             </div>
-            <span className="text-[11px] text-gray-500">
-              총 추정가치 ~$1,500.00
+            <span className="text-[11px] text-gray-500 block">
+              추정 가치 ~$1,500.00
             </span>
           </div>
 
           {/* Item 2: Horizon */}
-          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3">
-            <span className="text-xs text-gray-400 flex items-center gap-1 mb-1">
+          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3.5 space-y-1">
+            <span className="text-xs text-gray-400 flex items-center gap-1.5">
               <Calendar className="w-3.5 h-3.5 text-purple-400" />
-              목표 기간 (Horizon)
+              <span>목표 운용 기간</span>
             </span>
             {isManualMode ? (
               <select
@@ -226,18 +244,18 @@ export function AiNeedsPlanner({
                 <option value={365}>365일 (장기)</option>
               </select>
             ) : (
-              <div className="text-sm font-semibold text-white">
+              <div className="text-sm font-semibold text-white font-mono">
                 {editableProfile.horizonDays}일
               </div>
             )}
-            <span className="text-[11px] text-gray-500">복리 수익 추정 기준</span>
+            <span className="text-[11px] text-gray-500 block">복리 수익 추정 기준</span>
           </div>
 
           {/* Item 3: Minimum Liquid Reserve */}
-          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3">
-            <span className="text-xs text-gray-400 flex items-center gap-1 mb-1">
+          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3.5 space-y-1">
+            <span className="text-xs text-gray-400 flex items-center gap-1.5">
               <Shield className="w-3.5 h-3.5 text-emerald-400" />
-              최소 필요 유동성 (Liquid Reserve)
+              <span>최소 상시 유동성</span>
             </span>
             {isManualMode ? (
               <input
@@ -252,31 +270,31 @@ export function AiNeedsPlanner({
                 className="bg-gray-950 border border-gray-700 text-white text-xs rounded px-2 py-1 mt-0.5 focus:outline-none w-full"
               />
             ) : (
-              <div className="text-sm font-semibold text-emerald-400">
+              <div className="text-sm font-semibold text-emerald-400 font-mono">
                 ${editableProfile.minimumLiquidUsd}
               </div>
             )}
-            <span className="text-[11px] text-gray-500">예치 금지, 상시 보존</span>
+            <span className="text-[11px] text-gray-500 block">예치 금지, 즉시 인출 보존</span>
           </div>
 
           {/* Item 4: Risk & Volatility */}
-          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3">
-            <span className="text-xs text-gray-400 flex items-center gap-1 mb-1">
+          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3.5 space-y-1">
+            <span className="text-xs text-gray-400 flex items-center gap-1.5">
               <Target className="w-3.5 h-3.5 text-amber-400" />
-              위험 한도 (Risk & Cap)
+              <span>위험 한도 & 성향</span>
             </span>
-            <div className="text-sm font-semibold text-white">
-              {editableProfile.riskLevel} (변동성 max {(parseFloat(editableProfile.maxVolatileExposurePct) * 100).toFixed(0)}%)
+            <div className="text-sm font-semibold text-white font-mono">
+              {editableProfile.riskLevel} (max {(parseFloat(editableProfile.maxVolatileExposurePct) * 100).toFixed(0)}%)
             </div>
-            <span className="text-[11px] text-gray-500">목표: {editableProfile.goal}</span>
+            <span className="text-[11px] text-gray-500 block">목표: {editableProfile.goal}</span>
           </div>
         </div>
 
         {/* Action Button: Confirm and proceed */}
-        <div className="flex items-center justify-end gap-3 pt-2">
+        <div className="flex items-center justify-end pt-2">
           <button
             onClick={() => onProfileConfirmed(editableProfile)}
-            className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs px-5 py-2.5 rounded-lg flex items-center gap-2 shadow-md shadow-emerald-950 transition-colors"
+            className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-md shadow-emerald-950 transition-colors"
           >
             <span>조건 확인 및 2개 최적 플랜 생성</span>
             <ArrowRight className="w-4 h-4" />

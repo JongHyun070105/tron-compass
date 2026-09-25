@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { WalletHeader, WalletState } from "@/components/wallet/WalletHeader";
 import { MarketOverview } from "@/components/dashboard/MarketOverview";
 import { AiNeedsPlanner } from "@/components/planner/AiNeedsPlanner";
@@ -16,20 +16,26 @@ import {
 import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
 import { compassStorage } from "@/lib/persistence/storage";
 import {
+  detectActiveTronNetwork,
+  fetchTronWalletBalances,
+} from "@/lib/tron/network";
+import { PlanExplanation } from "@/lib/ai/schemas";
+import {
   Sparkles,
   Layers,
+  History,
+  Shield,
   ArrowRight,
   TrendingUp,
-  History,
-  ShieldAlert,
-  Info,
+  CheckCircle2,
+  Wallet,
 } from "lucide-react";
 
 export default function HomePage() {
-  // Wallet State
+  // Wallet State (Mutually Exclusive Demo Mode vs Real Wallet)
   const [walletState, setWalletState] = useState<WalletState>({
-    isConnected: true, // Default to connected demo state for seamless judge review
-    address: "TLyq6z7Pmoo4W4P3mJ6eF7vD5s8K9j1a2b",
+    isConnected: true, // Default to demo state for seamless judge review
+    address: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
     network: "Nile Testnet",
     trxBalance: "500.00",
     usddBalance: "1,000.00",
@@ -61,11 +67,16 @@ export default function HomePage() {
   });
 
   const [plans, setPlans] = useState<AllocationPlan[]>([]);
-  const [aiExplanation, setAiExplanation] = useState<{
-    planAExplanation: string;
-    planBExplanation: string;
-    comparisonRecommendation: string;
-  } | null>(null);
+  const [aiExplanation, setAiExplanation] = useState<
+    (PlanExplanation & { provider?: "gemini" | "mock_fallback" }) | null
+  >(null);
+  const [aiProvider, setAiProvider] = useState<"gemini" | "mock_fallback">("gemini");
+  const [aiModel, setAiModel] = useState<string>("gemini-2.5-flash");
+  const [isExplainingPlans, setIsExplainingPlans] = useState<boolean>(false);
+
+  // Deduplication ref for AI explain calls
+  const lastExplainedKeyRef = useRef<string>("");
+  const isExplainingRef = useRef<boolean>(false);
 
   // Execution Modal State
   const [isExecutionModalOpen, setIsExecutionModalOpen] = useState(false);
@@ -106,7 +117,7 @@ export default function HomePage() {
     loadMarketData();
   }, []);
 
-  // Generate plans upon profile confirmation
+  // Generate plans upon profile confirmation (strictly deduplicated AI explain call)
   const handleProfileConfirmed = async (confirmedProfile: NeedsProfile) => {
     setProfile(confirmedProfile);
     try {
@@ -118,36 +129,53 @@ export default function HomePage() {
 
       const data = await res.json();
       if (data.success && data.data?.plans) {
-        setPlans(data.data.plans);
+        const generatedPlans: AllocationPlan[] = data.data.plans;
+        setPlans(generatedPlans);
 
         // Save original plan snapshot
-        if (data.data.plans[0]) {
+        if (generatedPlans[0]) {
           await compassStorage.savePlan({
             id: `plan-snapshot-${Date.now()}`,
             walletAddress: walletState.address,
             createdAt: new Date().toISOString(),
-            plan: data.data.plans[0],
+            plan: generatedPlans[0],
             profile: confirmedProfile,
             marketSnapshot: opportunities,
           });
         }
 
-        // Call AI explanation
-        try {
-          const explainRes = await fetch("/api/ai/explain", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              profile: confirmedProfile,
-              plans: data.data.plans,
-            }),
-          });
-          const explainData = await explainRes.json();
-          if (explainData.success && explainData.data) {
-            setAiExplanation(explainData.data);
+        // Deduplicated AI explanation trigger
+        const explainKey = `${confirmedProfile.horizonDays}_${confirmedProfile.minimumLiquidUsd}_${confirmedProfile.riskLevel}_${generatedPlans.map((p) => p.id).join("_")}`;
+
+        if (lastExplainedKeyRef.current !== explainKey && !isExplainingRef.current) {
+          lastExplainedKeyRef.current = explainKey;
+          isExplainingRef.current = true;
+          setIsExplainingPlans(true);
+
+          try {
+            const explainRes = await fetch("/api/ai/explain", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                profile: confirmedProfile,
+                plans: generatedPlans,
+              }),
+            });
+            const explainData = await explainRes.json();
+            if (explainData.success && explainData.data) {
+              setAiExplanation({
+                ...explainData.data,
+                provider: explainData.provider || "gemini",
+              });
+              setAiProvider(explainData.provider || "gemini");
+              if (explainData.model) setAiModel(explainData.model);
+            }
+          } catch (err) {
+            console.warn("AI explanation fetch failed:", err);
+          } finally {
+            isExplainingRef.current = false;
+            setIsExplainingPlans(false);
           }
-        } catch {
-          // Fallback handled in provider
         }
       }
     } catch (err) {
@@ -155,44 +183,49 @@ export default function HomePage() {
     }
   };
 
-  // Generate initial plans automatically once opportunities load
+  // Generate initial plans automatically once opportunities load (runs only once)
+  const initialPlanTriggeredRef = useRef(false);
   useEffect(() => {
-    if (opportunities.length > 0 && plans.length === 0) {
+    if (opportunities.length > 0 && plans.length === 0 && !initialPlanTriggeredRef.current) {
+      initialPlanTriggeredRef.current = true;
       handleProfileConfirmed(profile);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opportunities]);
 
-  // Handle wallet interactions
+  // Handle wallet interactions with REAL on-chain balance fetching
   const handleConnect = async () => {
     if (typeof window !== "undefined" && (window as any).tronLink) {
       try {
         const res = await (window as any).tronLink.request({ method: "tron_requestAccounts" });
-        if (res.code === 200) {
-          const address = (window as any).tronWeb?.defaultAddress?.base58 || "T...";
-          setWalletState({
-            isConnected: true,
-            address,
-            network: "Nile Testnet",
-            trxBalance: "180.50",
-            usddBalance: "1,250.00",
-            isDemoMode: false,
-          });
+        if (res.code === 200 || res.code === 4001) {
+          const tw = (window as any).tronWeb;
+          const address = tw?.defaultAddress?.base58;
+          if (address) {
+            const net = detectActiveTronNetwork(tw);
+            const balances = await fetchTronWalletBalances(address, tw);
+
+            // Isolate real session: clear demo records
+            await compassStorage.clearDemoExecutions();
+
+            setWalletState({
+              isConnected: true,
+              address,
+              network: net.name,
+              trxBalance: balances.trx, // Real balance strictly queried from TronWeb!
+              usddBalance: balances.usdd,
+              isDemoMode: false,
+            });
+            return;
+          }
         }
-      } catch {
-        // Fallback to demo
+      } catch (err) {
+        console.warn("TronLink connection error:", err);
       }
-    } else {
-      // Demo mode if extension not installed
-      setWalletState({
-        isConnected: true,
-        address: "TLyq6z7Pmoo4W4P3mJ6eF7vD5s8K9j1a2b",
-        network: "Nile Testnet",
-        trxBalance: "500.00",
-        usddBalance: "1,000.00",
-        isDemoMode: true,
-      });
     }
+
+    // Fallback notification or guide if TronLink extension is not ready
+    alert("TronLink 지갑 확장이 감지되지 않았거나 잠겨 있습니다. 확장 프로그램을 확인해 주세요.");
   };
 
   const handleDisconnect = () => {
@@ -206,16 +239,75 @@ export default function HomePage() {
     });
   };
 
-  const handleToggleDemoMode = () => {
-    setWalletState((prev) => ({
-      ...prev,
-      isConnected: true,
-      address: prev.isDemoMode ? "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb" : "TLyq6z7Pmoo4W4P3mJ6eF7vD5s8K9j1a2b",
-      isDemoMode: !prev.isDemoMode,
-      trxBalance: !prev.isDemoMode ? "500.00" : "150.00",
-      usddBalance: "1,000.00",
-    }));
+  const handleToggleDemoMode = async () => {
+    if (!walletState.isDemoMode) {
+      // Switch TO Demo mode
+      setWalletState({
+        isConnected: true,
+        address: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+        network: "Nile Testnet",
+        trxBalance: "500.00",
+        usddBalance: "1,000.00",
+        isDemoMode: true,
+      });
+    } else {
+      // Switch TO Real Wallet mode: query real TronWeb if available
+      const tw = typeof window !== "undefined" ? (window as any).tronWeb : null;
+      const address = tw?.defaultAddress?.base58;
+
+      if (tw && address) {
+        const net = detectActiveTronNetwork(tw);
+        const balances = await fetchTronWalletBalances(address, tw);
+
+        await compassStorage.clearDemoExecutions();
+
+        setWalletState({
+          isConnected: true,
+          address,
+          network: net.name,
+          trxBalance: balances.trx, // STRICT REAL BALANCE
+          usddBalance: balances.usdd,
+          isDemoMode: false,
+        });
+      } else {
+        setWalletState({
+          isConnected: false,
+          address: "",
+          network: "Nile Testnet",
+          trxBalance: "0.00",
+          usddBalance: "0.00",
+          isDemoMode: false,
+        });
+      }
+    }
   };
+
+  // Listen to TronLink account or network switch events
+  useEffect(() => {
+    const handleTronMessage = async (e: MessageEvent) => {
+      if (
+        e.data?.message?.action === "setAccount" ||
+        e.data?.message?.action === "setNode"
+      ) {
+        const tw = (window as any).tronWeb;
+        const address = tw?.defaultAddress?.base58;
+        if (address && !walletState.isDemoMode) {
+          const net = detectActiveTronNetwork(tw);
+          const balances = await fetchTronWalletBalances(address, tw);
+          setWalletState((prev) => ({
+            ...prev,
+            address,
+            network: net.name,
+            trxBalance: balances.trx,
+            usddBalance: balances.usdd,
+          }));
+        }
+      }
+    };
+
+    window.addEventListener("message", handleTronMessage);
+    return () => window.removeEventListener("message", handleTronMessage);
+  }, [walletState.isDemoMode]);
 
   const handleSelectActionForExecution = (plan: AllocationPlan, leg: AllocationLeg) => {
     setSelectedPlanForExecution(plan);
@@ -224,8 +316,8 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0B0F19] text-gray-100 flex flex-col">
-      {/* Top Header */}
+    <div className="min-h-screen bg-[#0B0F19] text-gray-100 flex flex-col font-sans">
+      {/* 1. Header (Clean, progressive, streamlined) */}
       <WalletHeader
         walletState={walletState}
         onConnect={handleConnect}
@@ -233,8 +325,75 @@ export default function HomePage() {
         onToggleDemoMode={handleToggleDemoMode}
       />
 
-      {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6 space-y-8">
+      {/* 2. Main Container with 8px scale & 1240px max width */}
+      <main className="flex-1 max-w-[1240px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-8">
+        {/* Progressive 5-Step Journey Stepper Indicator */}
+        <div className="bg-gray-950/70 border border-gray-800/80 rounded-2xl p-4 sm:p-5">
+          <div className="text-xs text-gray-400 font-medium mb-3 flex items-center justify-between">
+            <span className="text-white font-bold flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-red-500"></span>
+              <span>TRON Compass 5단계 자산 배분 여정 (User Journey)</span>
+            </span>
+            <span className="text-[11px] text-gray-500">
+              {walletState.isDemoMode ? "모드: 데모 포트폴리오" : "모드: 실제 지갑 세션"}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 sm:gap-3 text-xs">
+            <div className="p-2.5 rounded-xl bg-gray-900 border border-gray-800 flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-red-600/30 text-red-400 font-bold text-[10px] flex items-center justify-center shrink-0">
+                1
+              </span>
+              <div>
+                <span className="font-semibold text-white block text-[11px]">포트폴리오</span>
+                <span className="text-[10px] text-gray-500 font-mono">
+                  {walletState.trxBalance} TRX
+                </span>
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-gray-900 border border-gray-800 flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-amber-600/30 text-amber-400 font-bold text-[10px] flex items-center justify-center shrink-0">
+                2
+              </span>
+              <div>
+                <span className="font-semibold text-white block text-[11px]">목표 분석</span>
+                <span className="text-[10px] text-gray-500">자연어 제약 정형화</span>
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-gray-900 border border-gray-800 flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-blue-600/30 text-blue-400 font-bold text-[10px] flex items-center justify-center shrink-0">
+                3
+              </span>
+              <div>
+                <span className="font-semibold text-white block text-[11px]">플랜 비교</span>
+                <span className="text-[10px] text-gray-500">Plan A vs Plan B</span>
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-gray-900 border border-gray-800 flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-purple-600/30 text-purple-400 font-bold text-[10px] flex items-center justify-center shrink-0">
+                4
+              </span>
+              <div>
+                <span className="font-semibold text-white block text-[11px]">실행 & 서명</span>
+                <span className="text-[10px] text-gray-500">Nile 테스트넷</span>
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-gray-900 border border-gray-800 flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-emerald-600/30 text-emerald-400 font-bold text-[10px] flex items-center justify-center shrink-0">
+                5
+              </span>
+              <div>
+                <span className="font-semibold text-white block text-[11px]">모니터링</span>
+                <span className="text-[10px] text-gray-500">리밸런싱 감지</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Navigation Tabs Bar */}
         <div className="flex items-center justify-between border-b border-gray-800 pb-3 flex-wrap gap-3">
           <div className="flex items-center gap-2">
@@ -259,7 +418,7 @@ export default function HomePage() {
               }`}
             >
               <Layers className="w-3.5 h-3.5" />
-              <span>검증된 생태계 마켓 현황 (JustLend & USDD)</span>
+              <span>생태계 마켓 현황 (JustLend & USDD)</span>
             </button>
 
             <button
@@ -271,20 +430,20 @@ export default function HomePage() {
               }`}
             >
               <History className="w-3.5 h-3.5" />
-              <span>히스토리컬 리플레이 & 리밸런싱 감지</span>
+              <span>히스토리컬 리플레이 & 리밸런싱</span>
             </button>
           </div>
 
           <div className="text-xs text-gray-400 flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-            <span>엔진 상태: 정상 (Deterministic)</span>
+            <span>결정론적 배분 엔진: 정상 가동</span>
           </div>
         </div>
 
         {/* View 1: AI Planner & Plan Comparison */}
         {activeTab === "PLANNER" && (
           <div className="space-y-8 animate-in fade-in">
-            {/* Step 1: AI Needs Analysis */}
+            {/* Step 2: AI Needs Analysis */}
             <AiNeedsPlanner
               currentProfile={profile}
               onProfileConfirmed={handleProfileConfirmed}
@@ -294,11 +453,14 @@ export default function HomePage() {
               ]}
             />
 
-            {/* Step 2: Deterministic Plan Comparison */}
+            {/* Step 3: Deterministic Plan Comparison */}
             <PlanComparison
               plans={plans}
               onSelectActionForExecution={handleSelectActionForExecution}
               aiExplanation={aiExplanation}
+              aiProvider={aiProvider}
+              aiModel={aiModel}
+              isAiExplaining={isExplainingPlans}
             />
           </div>
         )}
@@ -332,7 +494,7 @@ export default function HomePage() {
         )}
       </main>
 
-      {/* Execution Review Modal (Human-in-the-Loop Safe Gateway) */}
+      {/* Execution Modal (Human-in-the-Loop Safe Gateway) */}
       <ExecutionModal
         isOpen={isExecutionModalOpen}
         onClose={() => setIsExecutionModalOpen(false)}
@@ -342,14 +504,15 @@ export default function HomePage() {
         isWalletConnected={walletState.isConnected}
         isDemoMode={walletState.isDemoMode}
         trxBalance={walletState.trxBalance}
+        networkName={walletState.network}
         onExecutionCompleted={(hash) => {
-          console.log("Transaction successfully executed on Nile:", hash);
+          console.log("Transaction executed on Nile:", hash);
         }}
       />
 
       {/* Footer */}
       <footer className="border-t border-gray-800/80 bg-gray-950/80 py-6 text-xs text-gray-400 mt-12">
-        <div className="max-w-7xl mx-auto px-4 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="max-w-[1240px] mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <strong className="text-white font-bold">TRON Compass</strong>
             <span>—</span>

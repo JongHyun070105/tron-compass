@@ -1,6 +1,18 @@
 import { parseUnits, SafeMath, toDecimal } from "../math/decimal";
 import { JTRX_ABI, JUSTLEND_NILE_CONTRACTS } from "../integrations/justlend/contracts";
 
+export type TransactionLifecycleState =
+  | "IDLE"
+  | "REVIEW"
+  | "PREFLIGHT_FAILED"
+  | "READY_TO_SIGN"
+  | "AWAITING_WALLET_SIGNATURE"
+  | "BROADCASTING"
+  | "CONFIRMING"
+  | "CONFIRMED"
+  | "FAILED"
+  | "REJECTED";
+
 export interface PreflightCheck {
   key: string;
   name: string;
@@ -11,6 +23,8 @@ export interface PreflightCheck {
 export interface PreflightResult {
   ready: boolean;
   checks: PreflightCheck[];
+  requiredTotalTrx: string;
+  currentBalanceTrx: string;
 }
 
 export interface ExecutionPreview {
@@ -35,6 +49,28 @@ export interface TransactionStatusResult {
   energyFeeSun?: number;
   contractResult?: string;
   timestamp?: number;
+}
+
+export function determineTransactionState(params: {
+  preflightReady: boolean;
+  hasAuthorized: boolean;
+  currentExecutionState?: TransactionLifecycleState;
+}): TransactionLifecycleState {
+  if (
+    params.currentExecutionState &&
+    !["IDLE", "REVIEW", "PREFLIGHT_FAILED", "READY_TO_SIGN"].includes(
+      params.currentExecutionState
+    )
+  ) {
+    return params.currentExecutionState;
+  }
+  if (!params.preflightReady) {
+    return "PREFLIGHT_FAILED";
+  }
+  if (params.hasAuthorized) {
+    return "READY_TO_SIGN";
+  }
+  return "REVIEW";
 }
 
 export function buildPreflightChecks(params: {
@@ -75,14 +111,16 @@ export function buildPreflightChecks(params: {
   if (!isNile) ready = false;
 
   // 3. Balance sufficiency
-  const balance = toDecimal(params.trxBalance);
-  const required = toDecimal(params.requiredAmount);
+  const cleanedBalance = (params.trxBalance || "0").replace(/,/g, "").trim() || "0";
+  const cleanedRequired = (params.requiredAmount || "0").replace(/,/g, "").trim() || "0";
+  const balance = toDecimal(cleanedBalance);
+  const required = toDecimal(cleanedRequired);
   // Energy reserve buffer (~20 TRX)
   const requiredTotal = params.asset === "TRX"
     ? required.plus(20)
     : toDecimal(20);
 
-  const hasSufficient = balance.gte(requiredTotal);
+  const hasSufficient = hasWallet && balance.gte(requiredTotal);
   checks.push({
     key: "BALANCE_SUFFICIENT",
     name: "Sufficient Balance & Energy Buffer",
@@ -93,7 +131,12 @@ export function buildPreflightChecks(params: {
   });
   if (!hasSufficient) ready = false;
 
-  return { ready, checks };
+  return {
+    ready,
+    checks,
+    requiredTotalTrx: requiredTotal.toFixed(2),
+    currentBalanceTrx: balance.toFixed(2),
+  };
 }
 
 export function prepareJTrxSupplyPreview(
