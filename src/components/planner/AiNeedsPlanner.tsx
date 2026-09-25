@@ -14,6 +14,7 @@ import {
   Target,
   ArrowRight,
   Loader2,
+  Check,
 } from "lucide-react";
 
 interface AiNeedsPlannerProps {
@@ -24,16 +25,16 @@ interface AiNeedsPlannerProps {
 
 const PRESET_PROMPTS = [
   {
-    label: "3분 데모 표준 목표 (90일, $300 유동성, 저위험)",
-    text: "I have 1,000 USDD and some TRX. I want to invest for about 90 days, but at least $300 must remain liquid. I prefer low risk.",
+    label: "기본 추천 (90일 · $300 비상금 · 저위험)",
+    text: "1,000 USDD와 보유 중인 TRX를 90일 동안 운용하고 싶어요. 최소 $300는 언제든 출금할 수 있도록 남겨두고 저위험으로 안전하게 굴리고 싶습니다.",
   },
   {
-    label: "단기 유동성 방어 (30일, $500 유동성)",
-    text: "I have 1,500 USDD. I need money back in 30 days and at least $500 must stay liquid without lockup.",
+    label: "단기 비상금 보호 (30일 · $500 비상금)",
+    text: "1,500 USDD가 있습니다. 30일 이내에 단기로 운용하되, 최소 $500는 락업 없이 즉시 쓸 수 있어야 합니다.",
   },
   {
-    label: "수익 극대화 (180일, 균형 위험)",
-    text: "I have 2,000 USDD and 2,500 TRX. I want to maximize yield for 180 days with medium risk tolerance.",
+    label: "중기 수익 극대화 (180일 · 균형 위험)",
+    text: "2,000 USDD와 2,500 TRX를 180일 동안 최대한 높은 이율로 굴리고 싶습니다. 중간 수준의 변동성은 감수할 수 있습니다.",
   },
 ];
 
@@ -95,52 +96,62 @@ export function AiNeedsPlanner({
     }
   };
 
+  const riskKoreanMap: Record<string, string> = {
+    LOW: "저위험 (원금 보호 중심)",
+    MEDIUM: "중위험 (균형 수익)",
+    HIGH: "고위험 (수익 극대화)",
+  };
+
   return (
-    <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-6 relative overflow-hidden space-y-5">
+    <section className="bg-white border border-slate-200/90 rounded-3xl p-6 sm:p-8 shadow-xs space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 to-amber-500 flex items-center justify-center text-white shadow-md">
-            <Sparkles className="w-4 h-4" />
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 to-red-500 flex items-center justify-center text-white shadow-xs">
+            <Sparkles className="w-5 h-5" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-lg font-bold text-white tracking-tight">
-                AI 투자 목표 분석 및 제약조건 추출
+              <h2 className="text-xl font-bold text-slate-900 tracking-tight">
+                AI 투자 목표 분석
               </h2>
               {lastProvider === "gemini" && (
-                <span className="text-[10px] bg-red-950/80 text-red-300 border border-red-800 px-2 py-0.5 rounded font-medium">
-                  Live Gemini 2.5 Flash
+                <span className="text-[11px] bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded-full font-medium">
+                  Gemini 2.5 Flash
                 </span>
               )}
             </div>
-            <p className="text-xs text-gray-400 mt-0.5">
-              자연어로 작성된 투자 목표를 분석하여 정량적 재무 제약 조건(Needs Profile)으로 정형화합니다.
+            <p className="text-xs text-slate-500 mt-0.5">
+              원하는 목표를 편하게 입력하시면, AI가 맞춤 재무 조건으로 정형화합니다.
             </p>
           </div>
         </div>
 
         <button
           onClick={() => setIsManualMode(!isManualMode)}
-          className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 hover:bg-gray-800 text-gray-300 flex items-center gap-1.5 transition-colors"
+          className="text-xs px-3.5 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 flex items-center gap-1.5 transition-colors font-medium cursor-pointer"
         >
           <SlidersHorizontal className="w-3.5 h-3.5" />
-          <span>{isManualMode ? "자연어 대화 모드" : "수동 직접 조정"}</span>
+          <span>{isManualMode ? "자연어 모드로 전환" : "조건 직접 수정"}</span>
         </button>
       </div>
 
       {/* Preset Quick Chips */}
       {!isManualMode && (
-        <div className="space-y-1.5">
-          <span className="text-[11px] text-gray-400 font-medium block">
-            빠른 시나리오 프리셋 선택:
+        <div className="space-y-2">
+          <span className="text-xs text-slate-400 font-medium block">
+            빠른 목표 선택:
           </span>
           <div className="flex flex-wrap gap-2">
             {PRESET_PROMPTS.map((preset, idx) => (
               <button
                 key={idx}
                 onClick={() => setInputText(preset.text)}
-                className="text-xs px-3 py-1.5 rounded-lg bg-gray-950 hover:bg-gray-800/80 border border-gray-800 text-gray-300 hover:text-white transition-colors"
+                className={`text-xs px-3.5 py-2 rounded-xl border transition-all text-left cursor-pointer ${
+                  inputText === preset.text
+                    ? "bg-slate-900 text-white border-slate-900 font-medium shadow-2xs"
+                    : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-600"
+                }`}
               >
                 {preset.label}
               </button>
@@ -156,13 +167,13 @@ export function AiNeedsPlanner({
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             rows={3}
-            className="w-full bg-gray-950 border border-gray-800 rounded-xl p-4 pr-28 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-red-500 transition-colors resize-none leading-relaxed"
-            placeholder="투자 목표를 입력해 주세요. 예: I have 1,000 USDD and some TRX. I want to invest for about 90 days, but at least $300 must remain liquid..."
+            className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-4 pr-32 text-sm text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all resize-none leading-relaxed"
+            placeholder="투자 목표를 편하게 작성해 주세요. 예: 90일 정도 굴리고 싶고, 최소 300달러는 언제든 뺄 수 있게 남겨두고 싶어요..."
           />
           <button
             onClick={handleAnalyze}
             disabled={isAnalyzing || !inputText.trim()}
-            className="absolute right-3 bottom-3 bg-red-600 hover:bg-red-500 text-white font-semibold text-xs px-4 py-2 rounded-lg flex items-center gap-1.5 shadow transition-colors disabled:opacity-50"
+            className="absolute right-3 bottom-3 bg-red-600 hover:bg-red-500 text-white font-bold text-xs px-4 py-2.5 rounded-xl flex items-center gap-2 shadow-xs transition-all active:scale-[0.98] disabled:opacity-50 cursor-pointer"
           >
             {isAnalyzing ? (
               <>
@@ -172,7 +183,7 @@ export function AiNeedsPlanner({
             ) : (
               <>
                 <Send className="w-3.5 h-3.5" />
-                <span>목표 분석</span>
+                <span>AI 분석하기</span>
               </>
             )}
           </button>
@@ -181,51 +192,37 @@ export function AiNeedsPlanner({
 
       {/* Clarification Follow-up Question Banner */}
       {followUpQuestion && (
-        <div className="p-4 rounded-xl bg-amber-950/40 border border-amber-800/60 text-amber-200 text-xs flex items-start gap-3">
-          <HelpCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+        <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-start gap-3">
+          <HelpCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
           <div className="flex-1">
-            <strong className="font-semibold block text-amber-300 mb-0.5">
-              AI 제약조건 보완 질문:
+            <strong className="font-semibold block text-amber-900 mb-0.5">
+              AI 제약조건 확인 질문:
             </strong>
-            <p>{followUpQuestion}</p>
+            <p className="leading-relaxed">{followUpQuestion}</p>
           </div>
         </div>
       )}
 
-      {/* Confirmed Structured Needs Summary Card */}
-      <div className="bg-gray-950/80 border border-gray-800 rounded-xl p-5 space-y-4">
-        <div className="flex items-center justify-between border-b border-gray-800/80 pb-3">
+      {/* Structured Summary Card (4 Metric Boxes) */}
+      <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <CheckCircle className="w-4 h-4 text-emerald-400" />
-            <h3 className="text-sm font-bold text-white tracking-wide">
-              확정된 제약 조건 프로필 (Needs Profile)
+            <CheckCircle className="w-4 h-4 text-emerald-600" />
+            <h3 className="text-sm font-bold text-slate-900">
+              분석된 맞춤 조건 (Needs Profile)
             </h3>
           </div>
-          <span className="text-[11px] text-gray-500">
+          <span className="text-xs text-slate-400">
             엔진 배분 시 하드 제약으로 엄격히 적용됩니다
           </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          {/* Item 1: Holdings */}
-          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3.5 space-y-1">
-            <span className="text-xs text-gray-400 flex items-center gap-1.5">
-              <DollarSign className="w-3.5 h-3.5 text-blue-400" />
-              <span>보유 자산</span>
-            </span>
-            <div className="text-sm font-semibold text-white font-mono">
-              {editableProfile.holdings.map((h) => `${h.amount} ${h.asset}`).join(" + ")}
-            </div>
-            <span className="text-[11px] text-gray-500 block">
-              추정 가치 ~$1,500.00
-            </span>
-          </div>
-
-          {/* Item 2: Horizon */}
-          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3.5 space-y-1">
-            <span className="text-xs text-gray-400 flex items-center gap-1.5">
-              <Calendar className="w-3.5 h-3.5 text-purple-400" />
-              <span>목표 운용 기간</span>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {/* Item 1: Horizon */}
+          <div className="bg-white border border-slate-200/90 rounded-xl p-3.5 space-y-1 shadow-2xs">
+            <span className="text-xs text-slate-500 flex items-center gap-1.5 font-medium">
+              <Calendar className="w-3.5 h-3.5 text-blue-500" />
+              <span>운용 기간</span>
             </span>
             {isManualMode ? (
               <select
@@ -236,7 +233,7 @@ export function AiNeedsPlanner({
                     horizonDays: parseInt(e.target.value, 10),
                   })
                 }
-                className="bg-gray-950 border border-gray-700 text-white text-xs rounded px-2 py-1 mt-0.5 focus:outline-none w-full"
+                className="bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-lg px-2 py-1 mt-0.5 focus:outline-none w-full font-medium"
               >
                 <option value={30}>30일 (단기)</option>
                 <option value={90}>90일 (표준)</option>
@@ -244,18 +241,18 @@ export function AiNeedsPlanner({
                 <option value={365}>365일 (장기)</option>
               </select>
             ) : (
-              <div className="text-sm font-semibold text-white font-mono">
+              <div className="text-lg font-bold text-slate-900 font-mono">
                 {editableProfile.horizonDays}일
               </div>
             )}
-            <span className="text-[11px] text-gray-500 block">복리 수익 추정 기준</span>
+            <span className="text-[11px] text-slate-400 block">복리 수익 산정 기준</span>
           </div>
 
-          {/* Item 3: Minimum Liquid Reserve */}
-          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3.5 space-y-1">
-            <span className="text-xs text-gray-400 flex items-center gap-1.5">
-              <Shield className="w-3.5 h-3.5 text-emerald-400" />
-              <span>최소 상시 유동성</span>
+          {/* Item 2: Minimum Liquid Reserve */}
+          <div className="bg-white border border-slate-200/90 rounded-xl p-3.5 space-y-1 shadow-2xs">
+            <span className="text-xs text-slate-500 flex items-center gap-1.5 font-medium">
+              <Shield className="w-3.5 h-3.5 text-emerald-500" />
+              <span>최소 상시 비상금</span>
             </span>
             {isManualMode ? (
               <input
@@ -267,40 +264,69 @@ export function AiNeedsPlanner({
                     minimumLiquidUsd: e.target.value,
                   })
                 }
-                className="bg-gray-950 border border-gray-700 text-white text-xs rounded px-2 py-1 mt-0.5 focus:outline-none w-full"
+                className="bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-lg px-2 py-1 mt-0.5 focus:outline-none w-full font-mono font-medium"
               />
             ) : (
-              <div className="text-sm font-semibold text-emerald-400 font-mono">
+              <div className="text-lg font-bold text-emerald-600 font-mono">
                 ${editableProfile.minimumLiquidUsd}
               </div>
             )}
-            <span className="text-[11px] text-gray-500 block">예치 금지, 즉시 인출 보존</span>
+            <span className="text-[11px] text-slate-400 block">예치 금지, 상시 인출 가능</span>
           </div>
 
-          {/* Item 4: Risk & Volatility */}
-          <div className="bg-gray-900/90 border border-gray-800 rounded-lg p-3.5 space-y-1">
-            <span className="text-xs text-gray-400 flex items-center gap-1.5">
-              <Target className="w-3.5 h-3.5 text-amber-400" />
-              <span>위험 한도 & 성향</span>
+          {/* Item 3: Risk Level */}
+          <div className="bg-white border border-slate-200/90 rounded-xl p-3.5 space-y-1 shadow-2xs">
+            <span className="text-xs text-slate-500 flex items-center gap-1.5 font-medium">
+              <Target className="w-3.5 h-3.5 text-amber-500" />
+              <span>위험 성향</span>
             </span>
-            <div className="text-sm font-semibold text-white font-mono">
-              {editableProfile.riskLevel} (max {(parseFloat(editableProfile.maxVolatileExposurePct) * 100).toFixed(0)}%)
+            {isManualMode ? (
+              <select
+                value={editableProfile.riskLevel}
+                onChange={(e) =>
+                  setEditableProfile({
+                    ...editableProfile,
+                    riskLevel: e.target.value as any,
+                  })
+                }
+                className="bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-lg px-2 py-1 mt-0.5 focus:outline-none w-full font-medium"
+              >
+                <option value="LOW">저위험 (안전)</option>
+                <option value="MEDIUM">중위험 (균형)</option>
+                <option value="HIGH">고위험 (적극)</option>
+              </select>
+            ) : (
+              <div className="text-base font-bold text-slate-900">
+                {riskKoreanMap[editableProfile.riskLevel] || editableProfile.riskLevel}
+              </div>
+            )}
+            <span className="text-[11px] text-slate-400 block">원금 보존 우선 원칙</span>
+          </div>
+
+          {/* Item 4: Max Volatile Exposure */}
+          <div className="bg-white border border-slate-200/90 rounded-xl p-3.5 space-y-1 shadow-2xs">
+            <span className="text-xs text-slate-500 flex items-center gap-1.5 font-medium">
+              <DollarSign className="w-3.5 h-3.5 text-purple-500" />
+              <span>최대 변동성 노출</span>
+            </span>
+            <div className="text-lg font-bold text-slate-900 font-mono">
+              {(parseFloat(editableProfile.maxVolatileExposurePct) * 100).toFixed(0)}% 이내
             </div>
-            <span className="text-[11px] text-gray-500 block">목표: {editableProfile.goal}</span>
+            <span className="text-[11px] text-slate-400 block">TRX 가격 변동 리스크 제한</span>
           </div>
         </div>
 
-        {/* Action Button: Confirm and proceed */}
+        {/* Primary Action Button: Confirm and proceed */}
         <div className="flex items-center justify-end pt-2">
           <button
             onClick={() => onProfileConfirmed(editableProfile)}
-            className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-md shadow-emerald-950 transition-colors"
+            className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs px-5 py-3 rounded-xl flex items-center gap-2 shadow-xs transition-all active:scale-[0.98] cursor-pointer"
           >
-            <span>조건 확인 및 2개 최적 플랜 생성</span>
-            <ArrowRight className="w-4 h-4" />
+            <span>이 조건으로 2개 추천 플랜 계산하기</span>
+            <ArrowRight className="w-4 h-4 text-slate-300" />
           </button>
         </div>
       </div>
-    </div>
+    </section>
   );
 }

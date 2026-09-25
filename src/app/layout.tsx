@@ -3,9 +3,9 @@ import "./globals.css";
 import { Providers } from "@/components/providers";
 
 export const metadata: Metadata = {
-  title: "TRON Compass — AI Asset Allocation & Yield Planning Assistant",
+  title: "TRON Compass — AI 자산 배분 & 수익 플래너",
   description:
-    "GWDC 2026 TRON Challenge B: Convert user needs into evidence-based TRON yield plans using JustLend & USDD data, executing only user-approved actions on Nile testnet.",
+    "누구나 10초 만에 이해하는 TRON 스마트 자산 배분 및 JustLend 수익 계획 도우미",
 };
 
 export default function RootLayout({
@@ -14,8 +14,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="ko" className="dark">
-      <body className="bg-[#0B0F19] text-gray-100 min-h-screen antialiased">
+    <html lang="ko">
+      <body className="bg-slate-50 text-slate-900 min-h-screen antialiased selection:bg-red-500 selection:text-white">
         <Providers>{children}</Providers>
       </body>
     </html>

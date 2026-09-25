@@ -15,6 +15,7 @@ export async function GET() {
       justlend: "CONNECTED (OpenAPI v1)",
       usdd: "CONNECTED (USDD Data Platform)",
       gemini: process.env.GEMINI_API_KEY ? "CONFIGURED" : "MOCK_FALLBACK",
+      trongrid: process.env.TRONGRID_API_KEY ? "CONFIGURED" : "MISSING_KEY",
     },
   });
 }

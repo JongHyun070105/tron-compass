@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { WalletHeader, WalletState } from "@/components/wallet/WalletHeader";
+import { JourneyStepper, JourneyStep } from "@/components/navigation/JourneyStepper";
+import { PortfolioHero } from "@/components/portfolio/PortfolioHero";
 import { MarketOverview } from "@/components/dashboard/MarketOverview";
 import { AiNeedsPlanner } from "@/components/planner/AiNeedsPlanner";
 import { PlanComparison } from "@/components/plans/PlanComparison";
@@ -24,11 +26,8 @@ import {
   Sparkles,
   Layers,
   History,
-  Shield,
+  ShieldCheck,
   ArrowRight,
-  TrendingUp,
-  CheckCircle2,
-  Wallet,
 } from "lucide-react";
 
 export default function HomePage() {
@@ -83,8 +82,14 @@ export default function HomePage() {
   const [selectedPlanForExecution, setSelectedPlanForExecution] = useState<AllocationPlan | null>(null);
   const [selectedLegForExecution, setSelectedLegForExecution] = useState<AllocationLeg | null>(null);
 
-  // Active Tab
+  // Active Tab & Stepper
   const [activeTab, setActiveTab] = useState<"PLANNER" | "MARKET" | "MONITOR">("PLANNER");
+  const [currentStep, setCurrentStep] = useState<JourneyStep>(1);
+
+  // Section references for smooth scrolling
+  const heroRef = useRef<HTMLDivElement>(null);
+  const goalsRef = useRef<HTMLDivElement>(null);
+  const plansRef = useRef<HTMLDivElement>(null);
 
   // Fetch initial market data
   const loadMarketData = async (forceRefresh: boolean = false) => {
@@ -120,6 +125,8 @@ export default function HomePage() {
   // Generate plans upon profile confirmation (strictly deduplicated AI explain call)
   const handleProfileConfirmed = async (confirmedProfile: NeedsProfile) => {
     setProfile(confirmedProfile);
+    setCurrentStep(3); // Advance stepper to Plan Comparison
+
     try {
       const res = await fetch("/api/allocation/plan", {
         method: "POST",
@@ -212,7 +219,7 @@ export default function HomePage() {
               isConnected: true,
               address,
               network: net.name,
-              trxBalance: balances.trx, // Real balance strictly queried from TronWeb!
+              trxBalance: balances.trx,
               usddBalance: balances.usdd,
               isDemoMode: false,
             });
@@ -224,7 +231,6 @@ export default function HomePage() {
       }
     }
 
-    // Fallback notification or guide if TronLink extension is not ready
     alert("TronLink 지갑 확장이 감지되지 않았거나 잠겨 있습니다. 확장 프로그램을 확인해 주세요.");
   };
 
@@ -251,7 +257,7 @@ export default function HomePage() {
         isDemoMode: true,
       });
     } else {
-      // Switch TO Real Wallet mode: query real TronWeb if available
+      // Switch TO Real Wallet mode
       const tw = typeof window !== "undefined" ? (window as any).tronWeb : null;
       const address = tw?.defaultAddress?.base58;
 
@@ -265,7 +271,7 @@ export default function HomePage() {
           isConnected: true,
           address,
           network: net.name,
-          trxBalance: balances.trx, // STRICT REAL BALANCE
+          trxBalance: balances.trx,
           usddBalance: balances.usdd,
           isDemoMode: false,
         });
@@ -312,12 +318,37 @@ export default function HomePage() {
   const handleSelectActionForExecution = (plan: AllocationPlan, leg: AllocationLeg) => {
     setSelectedPlanForExecution(plan);
     setSelectedLegForExecution(leg);
+    setCurrentStep(4); // Advance to Execution step
     setIsExecutionModalOpen(true);
   };
 
+  const handleStepSelect = (step: JourneyStep) => {
+    setCurrentStep(step);
+    if (step === 1) {
+      setActiveTab("PLANNER");
+      heroRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else if (step === 2) {
+      setActiveTab("PLANNER");
+      goalsRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else if (step === 3) {
+      setActiveTab("PLANNER");
+      plansRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else if (step === 4) {
+      setActiveTab("PLANNER");
+      if (plans[0]) {
+        const execLeg = plans[1]?.allocations.find((a) => a.executable) || plans[0]?.allocations.find((a) => a.executable);
+        if (execLeg) {
+          handleSelectActionForExecution(plans[1] || plans[0], execLeg);
+        }
+      }
+    } else if (step === 5) {
+      setActiveTab("MONITOR");
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-[#0B0F19] text-gray-100 flex flex-col font-sans">
-      {/* 1. Header (Clean, progressive, streamlined) */}
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
+      {/* 1. Sticky Header (Clean, minimal clutter, light fintech) */}
       <WalletHeader
         walletState={walletState}
         onConnect={handleConnect}
@@ -325,143 +356,109 @@ export default function HomePage() {
         onToggleDemoMode={handleToggleDemoMode}
       />
 
-      {/* 2. Main Container with 8px scale & 1240px max width */}
-      <main className="flex-1 max-w-[1240px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-8">
-        {/* Progressive 5-Step Journey Stepper Indicator */}
-        <div className="bg-gray-950/70 border border-gray-800/80 rounded-2xl p-4 sm:p-5">
-          <div className="text-xs text-gray-400 font-medium mb-3 flex items-center justify-between">
-            <span className="text-white font-bold flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-red-500"></span>
-              <span>TRON Compass 5단계 자산 배분 여정 (User Journey)</span>
-            </span>
-            <span className="text-[11px] text-gray-500">
-              {walletState.isDemoMode ? "모드: 데모 포트폴리오" : "모드: 실제 지갑 세션"}
-            </span>
-          </div>
+      {/* 2. Main Container with 8px scale & 1200px max width */}
+      <main className="flex-1 max-w-[1200px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6 sm:space-y-8">
+        {/* Step Progression Stepper (Visual 5-Step Journey) */}
+        <JourneyStepper
+          currentStep={currentStep}
+          onSelectStep={handleStepSelect}
+        />
 
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 sm:gap-3 text-xs">
-            <div className="p-2.5 rounded-xl bg-gray-900 border border-gray-800 flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-red-600/30 text-red-400 font-bold text-[10px] flex items-center justify-center shrink-0">
-                1
-              </span>
-              <div>
-                <span className="font-semibold text-white block text-[11px]">포트폴리오</span>
-                <span className="text-[10px] text-gray-500 font-mono">
-                  {walletState.trxBalance} TRX
-                </span>
-              </div>
-            </div>
-
-            <div className="p-2.5 rounded-xl bg-gray-900 border border-gray-800 flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-amber-600/30 text-amber-400 font-bold text-[10px] flex items-center justify-center shrink-0">
-                2
-              </span>
-              <div>
-                <span className="font-semibold text-white block text-[11px]">목표 분석</span>
-                <span className="text-[10px] text-gray-500">자연어 제약 정형화</span>
-              </div>
-            </div>
-
-            <div className="p-2.5 rounded-xl bg-gray-900 border border-gray-800 flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-blue-600/30 text-blue-400 font-bold text-[10px] flex items-center justify-center shrink-0">
-                3
-              </span>
-              <div>
-                <span className="font-semibold text-white block text-[11px]">플랜 비교</span>
-                <span className="text-[10px] text-gray-500">Plan A vs Plan B</span>
-              </div>
-            </div>
-
-            <div className="p-2.5 rounded-xl bg-gray-900 border border-gray-800 flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-purple-600/30 text-purple-400 font-bold text-[10px] flex items-center justify-center shrink-0">
-                4
-              </span>
-              <div>
-                <span className="font-semibold text-white block text-[11px]">실행 & 서명</span>
-                <span className="text-[10px] text-gray-500">Nile 테스트넷</span>
-              </div>
-            </div>
-
-            <div className="p-2.5 rounded-xl bg-gray-900 border border-gray-800 flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-emerald-600/30 text-emerald-400 font-bold text-[10px] flex items-center justify-center shrink-0">
-                5
-              </span>
-              <div>
-                <span className="font-semibold text-white block text-[11px]">모니터링</span>
-                <span className="text-[10px] text-gray-500">리밸런싱 감지</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Navigation Tabs Bar */}
-        <div className="flex items-center justify-between border-b border-gray-800 pb-3 flex-wrap gap-3">
+        {/* Navigation Tabs Bar (Clean Segmented View Switcher) */}
+        <div className="flex items-center justify-between border-b border-slate-200 pb-4 flex-wrap gap-3">
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setActiveTab("PLANNER")}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              onClick={() => {
+                setActiveTab("PLANNER");
+                setCurrentStep(3);
+              }}
+              className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
                 activeTab === "PLANNER"
-                  ? "bg-red-600 text-white shadow-lg shadow-red-900/30"
-                  : "bg-gray-900 text-gray-400 hover:text-white hover:bg-gray-800"
+                  ? "bg-slate-900 text-white shadow-xs"
+                  : "bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-slate-200"
               }`}
             >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>AI 플래너 & 플랜 비교 (Plan A/B)</span>
+              <Sparkles className="w-4 h-4 text-amber-400" />
+              <span>AI 플래너 & 플랜 비교</span>
             </button>
 
             <button
               onClick={() => setActiveTab("MARKET")}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
                 activeTab === "MARKET"
-                  ? "bg-blue-600 text-white shadow-lg shadow-blue-900/30"
-                  : "bg-gray-900 text-gray-400 hover:text-white hover:bg-gray-800"
+                  ? "bg-slate-900 text-white shadow-xs"
+                  : "bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-slate-200"
               }`}
             >
-              <Layers className="w-3.5 h-3.5" />
-              <span>생태계 마켓 현황 (JustLend & USDD)</span>
+              <Layers className="w-4 h-4 text-blue-500" />
+              <span>생태계 마켓 현황</span>
             </button>
 
             <button
-              onClick={() => setActiveTab("MONITOR")}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              onClick={() => {
+                setActiveTab("MONITOR");
+                setCurrentStep(5);
+              }}
+              className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
                 activeTab === "MONITOR"
-                  ? "bg-amber-600 text-white shadow-lg shadow-amber-900/30"
-                  : "bg-gray-900 text-gray-400 hover:text-white hover:bg-gray-800"
+                  ? "bg-slate-900 text-white shadow-xs"
+                  : "bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-slate-200"
               }`}
             >
-              <History className="w-3.5 h-3.5" />
-              <span>히스토리컬 리플레이 & 리밸런싱</span>
+              <History className="w-4 h-4 text-amber-500" />
+              <span>모의 리플레이 & 모니터링</span>
             </button>
           </div>
 
-          <div className="text-xs text-gray-400 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-            <span>결정론적 배분 엔진: 정상 가동</span>
+          <div className="text-xs text-slate-500 flex items-center gap-2 font-medium">
+            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span>수학적 배분 엔진: 정상 가동</span>
           </div>
         </div>
 
-        {/* View 1: AI Planner & Plan Comparison */}
+        {/* View 1: Main Planner & 5-Step Journey Flow */}
         {activeTab === "PLANNER" && (
           <div className="space-y-8 animate-in fade-in">
-            {/* Step 2: AI Needs Analysis */}
-            <AiNeedsPlanner
-              currentProfile={profile}
-              onProfileConfirmed={handleProfileConfirmed}
-              walletHoldings={[
-                { asset: "USDD", amount: walletState.usddBalance.replace(/,/g, "") },
-                { asset: "TRX", amount: walletState.trxBalance.replace(/,/g, "") },
-              ]}
-            />
+            {/* Step 1: Portfolio Hero */}
+            <div ref={heroRef}>
+              <PortfolioHero
+                walletState={walletState}
+                profile={profile}
+                onExplorePlans={() => {
+                  setCurrentStep(3);
+                  plansRef.current?.scrollIntoView({ behavior: "smooth" });
+                }}
+                onOpenGoals={() => {
+                  setCurrentStep(2);
+                  goalsRef.current?.scrollIntoView({ behavior: "smooth" });
+                }}
+                hasPlans={plans.length > 0}
+              />
+            </div>
 
-            {/* Step 3: Deterministic Plan Comparison */}
-            <PlanComparison
-              plans={plans}
-              onSelectActionForExecution={handleSelectActionForExecution}
-              aiExplanation={aiExplanation}
-              aiProvider={aiProvider}
-              aiModel={aiModel}
-              isAiExplaining={isExplainingPlans}
-            />
+            {/* Step 2: Goals / AI Needs Analysis */}
+            <div ref={goalsRef}>
+              <AiNeedsPlanner
+                currentProfile={profile}
+                onProfileConfirmed={handleProfileConfirmed}
+                walletHoldings={[
+                  { asset: "USDD", amount: walletState.usddBalance.replace(/,/g, "") },
+                  { asset: "TRX", amount: walletState.trxBalance.replace(/,/g, "") },
+                ]}
+              />
+            </div>
+
+            {/* Step 3: Plan Comparison (Plan A Safe vs Plan B Balanced) */}
+            <div ref={plansRef}>
+              <PlanComparison
+                plans={plans}
+                onSelectActionForExecution={handleSelectActionForExecution}
+                aiExplanation={aiExplanation}
+                aiProvider={aiProvider}
+                aiModel={aiModel}
+                isAiExplaining={isExplainingPlans}
+              />
+            </div>
           </div>
         )}
 
@@ -488,6 +485,7 @@ export default function HomePage() {
               onApplyRebalance={(newPlan) => {
                 setPlans([newPlan, ...plans.filter((p) => p.id !== newPlan.id)]);
                 setActiveTab("PLANNER");
+                setCurrentStep(3);
               }}
             />
           </div>
@@ -507,18 +505,19 @@ export default function HomePage() {
         networkName={walletState.network}
         onExecutionCompleted={(hash) => {
           console.log("Transaction executed on Nile:", hash);
+          setCurrentStep(5); // Move to post-execution monitoring
         }}
       />
 
-      {/* Footer */}
-      <footer className="border-t border-gray-800/80 bg-gray-950/80 py-6 text-xs text-gray-400 mt-12">
-        <div className="max-w-[1240px] mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+      {/* Footer (Clean & Subtle) */}
+      <footer className="border-t border-slate-200 bg-white py-6 text-xs text-slate-500 mt-16">
+        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
-            <strong className="text-white font-bold">TRON Compass</strong>
+            <strong className="text-slate-900 font-bold">TRON Compass</strong>
             <span>—</span>
             <span>AI understands. Code verifies. User approves. TRON executes.</span>
           </div>
-          <div className="flex items-center gap-4 text-gray-500">
+          <div className="flex items-center gap-4 text-slate-400">
             <span>GWDC 2026 TRON Challenge B</span>
             <span>•</span>
             <span>JustLend OpenAPI & USDD Verified</span>

@@ -214,45 +214,46 @@ export async function executeJTrxSupplyOnNile(
 }
 
 /**
- * Polls Nile TronGrid for transaction receipt and status confirmation.
+ * Polls Nile TronGrid via Next.js server route (/api/tron/verify-tx) with authenticated TRON-PRO-API-KEY.
+ * Strictly verifies real on-chain transaction receipt and block inclusion.
  */
 export async function pollTransactionStatus(
   txHash: string,
-  maxAttempts: number = 8,
-  delayMs: number = 2500
+  maxAttempts: number = 10,
+  delayMs: number = 2500,
+  network: "nile" | "mainnet" = "nile"
 ): Promise<TransactionStatusResult> {
-  const url = `https://nile.trongrid.io/wallet/gettransactioninfobyid`;
-
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      const res = await fetch(url, {
+      const res = await fetch("/api/tron/verify-tx", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ value: txHash }),
+        body: JSON.stringify({ txHash, network }),
       });
 
       if (res.ok) {
         const data = await res.json();
-        if (data && data.id) {
-          const receipt = data.receipt;
-          const resultStr = receipt?.result || (data.result === "FAILED" ? "FAILED" : "SUCCESS");
-          const isConfirmed = resultStr === "SUCCESS" || !receipt?.result;
-
-          return {
-            txHash,
-            status: isConfirmed ? "CONFIRMED" : "FAILED",
-            blockNumber: data.blockNumber,
-            energyFeeSun: receipt?.energy_fee || 0,
-            contractResult: resultStr,
-            timestamp: data.blockTimeStamp,
-          };
+        if (data.success) {
+          if (data.status === "CONFIRMED" || data.status === "FAILED") {
+            return {
+              txHash,
+              status: data.status,
+              blockNumber: data.blockNumber,
+              energyFeeSun: data.energyFeeSun || 0,
+              contractResult: data.contractResult,
+              timestamp: data.blockTimestamp,
+            };
+          }
+          // Status is PENDING or NOT_FOUND, continue polling until included in block
         }
       }
     } catch {
       // Continue polling until maxAttempts
     }
 
-    await new Promise((r) => setTimeout(r, delayMs));
+    if (i < maxAttempts - 1) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
   }
 
   return {

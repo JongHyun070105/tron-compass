@@ -7,7 +7,7 @@ import {
   Radio,
   Sparkles,
   LogOut,
-  Layers,
+  ChevronRight,
 } from "lucide-react";
 
 export interface WalletState {
@@ -33,111 +33,86 @@ export function WalletHeader({
   onToggleDemoMode,
 }: WalletHeaderProps) {
   return (
-    <header className="border-b border-gray-800/90 bg-[#0B0F19]/95 backdrop-blur-md sticky top-0 z-40 px-4 sm:px-6 lg:px-8 py-3">
-      <div className="max-w-[1240px] mx-auto flex flex-col md:flex-row items-center justify-between gap-3.5">
+    <header className="border-b border-slate-200/80 bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 sm:px-6 lg:px-8 py-3 transition-colors">
+      <div className="max-w-[1200px] mx-auto flex items-center justify-between gap-4">
         {/* Brand & Subtitle */}
-        <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-start">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-red-600 flex items-center justify-center shadow-md shadow-red-900/40 text-white font-black text-base">
-              ▲
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-extrabold text-lg tracking-tight text-white">
-                  TRON Compass
-                </span>
-                <span className="text-[10px] text-gray-500 hidden sm:inline-block border border-gray-800 rounded px-1.5 py-0.5">
-                  GWDC 2026 Challenge B
-                </span>
-              </div>
-              <p className="text-[11px] text-gray-400 hidden sm:block">
-                AI Asset Allocation & Yield Planning
-              </p>
-            </div>
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-red-600 to-rose-500 flex items-center justify-center shadow-sm text-white font-black text-lg select-none">
+            ▲
           </div>
-
-          {/* Mobile mode switch button */}
-          <button
-            onClick={onToggleDemoMode}
-            className="md:hidden text-xs px-2.5 py-1 rounded-lg border border-gray-700 text-gray-300 flex items-center gap-1.5"
-          >
-            <Sparkles className="w-3 h-3 text-amber-400" />
-            <span>{walletState.isDemoMode ? "실제 지갑 전환" : "데모 모드"}</span>
-          </button>
-        </div>
-
-        {/* Mandatory Network & Data Badges */}
-        <div className="flex items-center gap-2 text-xs">
-          <div className="flex items-center gap-1.5 bg-blue-950/50 border border-blue-800/50 text-blue-300 px-2.5 py-1 rounded-lg">
-            <Globe className="w-3.5 h-3.5 text-blue-400" />
-            <span className="text-gray-400 text-[11px]">데이터:</span>
-            <strong className="text-blue-200">TRON Mainnet</strong>
-          </div>
-
-          <div className="flex items-center gap-1.5 bg-purple-950/50 border border-purple-800/50 text-purple-300 px-2.5 py-1 rounded-lg">
-            <Radio className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
-            <span className="text-gray-400 text-[11px]">실행:</span>
-            <strong className="text-purple-200">Nile Testnet</strong>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-extrabold text-lg tracking-tight text-slate-900">
+                TRON Compass
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 font-medium">
+              AI 자산 배분 & 수익 계획
+            </p>
           </div>
         </div>
 
-        {/* Right: Portfolio Switcher & Wallet Connection */}
-        <div className="flex items-center gap-2.5 w-full md:w-auto justify-end">
-          {/* Mutually Exclusive Mode Switcher */}
-          <div className="hidden md:flex items-center bg-gray-950 border border-gray-800 rounded-lg p-0.5 text-xs">
+        {/* Center: Essential Trust Badges (Compact & Calm) */}
+        <div className="hidden md:flex items-center gap-2">
+          <div className="flex items-center gap-1.5 bg-slate-100/80 text-slate-600 px-2.5 py-1 rounded-full text-xs font-medium border border-slate-200/60">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+            <span>Mainnet 시장 데이터</span>
+          </div>
+
+          <div className="flex items-center gap-1.5 bg-slate-100/80 text-slate-600 px-2.5 py-1 rounded-full text-xs font-medium border border-slate-200/60">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+            <span>Nile 실행 검증</span>
+          </div>
+        </div>
+
+        {/* Right: Mode Switcher & Wallet Status */}
+        <div className="flex items-center gap-3">
+          {/* Segmented Mode Control */}
+          <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200/80 text-xs font-medium">
             <button
               onClick={() => {
                 if (!walletState.isDemoMode) onToggleDemoMode();
               }}
-              className={`px-2.5 py-1 rounded-md transition-all font-medium flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
                 walletState.isDemoMode
-                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                  : "text-gray-400 hover:text-gray-200"
+                  ? "bg-white text-slate-900 shadow-xs font-semibold"
+                  : "text-slate-500 hover:text-slate-900"
               }`}
             >
-              <Sparkles className="w-3 h-3" />
-              <span>데모 포트폴리오</span>
+              <Sparkles className="w-3 h-3 text-amber-500" />
+              <span>체험 모드</span>
             </button>
             <button
               onClick={() => {
                 if (walletState.isDemoMode) onToggleDemoMode();
               }}
-              className={`px-2.5 py-1 rounded-md transition-all font-medium flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
                 !walletState.isDemoMode
-                  ? "bg-purple-900/40 text-purple-300 border border-purple-700/50"
-                  : "text-gray-400 hover:text-gray-200"
+                  ? "bg-white text-slate-900 shadow-xs font-semibold"
+                  : "text-slate-500 hover:text-slate-900"
               }`}
             >
-              <Wallet className="w-3 h-3" />
-              <span>실제 지갑 (Real)</span>
+              <Wallet className="w-3 h-3 text-red-500" />
+              <span>실제 지갑</span>
             </button>
           </div>
 
-          {/* Wallet State Card */}
+          {/* Connected Wallet Badge or Connect Button */}
           {walletState.isConnected ? (
-            <div className="flex items-center gap-2.5 bg-gray-900 border border-gray-800 rounded-xl p-1.5 pl-3">
-              <div className="flex items-center gap-2 text-xs font-mono">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="text-gray-200">
+            <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl p-1 pl-3 shadow-2xs">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span className="text-slate-700 font-mono font-medium">
                   {walletState.address.slice(0, 5)}...{walletState.address.slice(-4)}
                 </span>
-                {walletState.isDemoMode && (
-                  <span className="text-[10px] font-sans font-bold bg-amber-950 text-amber-300 border border-amber-800 px-1.5 py-0.2 rounded">
-                    DEMO
-                  </span>
-                )}
-              </div>
-
-              {/* Balances */}
-              <div className="text-right text-xs px-1 border-l border-gray-800/80">
-                <div className="text-white font-semibold font-mono">
+                <span className="text-slate-900 font-bold font-mono pl-1 border-l border-slate-200">
                   {walletState.trxBalance} TRX
-                </div>
+                </span>
               </div>
 
               <button
                 onClick={onDisconnect}
-                className="text-gray-400 hover:text-red-400 p-1.5 hover:bg-gray-800 rounded-lg transition-colors"
+                className="text-slate-400 hover:text-rose-600 p-1.5 hover:bg-slate-100 rounded-lg transition-colors ml-1"
                 title="연결 해제"
               >
                 <LogOut className="w-3.5 h-3.5" />
@@ -146,10 +121,10 @@ export function WalletHeader({
           ) : (
             <button
               onClick={onConnect}
-              className="bg-red-600 hover:bg-red-500 text-white font-semibold text-xs px-4 py-2 rounded-xl flex items-center gap-2 shadow-md shadow-red-900/30 transition-colors"
+              className="bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs px-4 py-2 rounded-xl flex items-center gap-2 shadow-xs transition-all active:scale-[0.98]"
             >
-              <Wallet className="w-4 h-4" />
-              <span>지갑 연결 (TronLink)</span>
+              <Wallet className="w-3.5 h-3.5" />
+              <span>지갑 연결하기</span>
             </button>
           )}
         </div>
