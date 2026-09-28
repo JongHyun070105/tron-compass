@@ -3,7 +3,6 @@ import { z } from "zod";
 export const HoldingSchema = z.object({
   asset: z.string(),
   amount: z.string(),
-  estimatedUsd: z.string().optional(),
 });
 
 export const RiskLevelSchema = z.enum(["LOW", "MEDIUM", "HIGH"]);

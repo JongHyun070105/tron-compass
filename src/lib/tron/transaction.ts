@@ -1,5 +1,7 @@
 import { parseUnits, SafeMath, toDecimal } from "../math/decimal";
 import { JTRX_ABI, JUSTLEND_NILE_CONTRACTS } from "../integrations/justlend/contracts";
+import { AllocationLeg } from "@/domain/allocation/types";
+import { DecisionEvidenceItem, DecisionStopRecord, makeStopRecord } from "@/domain/decision/receipt";
 
 export type TransactionLifecycleState =
   | "IDLE"
@@ -11,7 +13,9 @@ export type TransactionLifecycleState =
   | "CONFIRMING"
   | "CONFIRMED"
   | "FAILED"
-  | "REJECTED";
+  | "REJECTED"
+  | "STOPPED"
+  | "SIMULATED";
 
 export interface PreflightCheck {
   key: string;
@@ -41,6 +45,140 @@ export interface ExecutionPreview {
   estimatedFeeTrx: string;
   approvalScope: string;
   riskNotice: string;
+}
+
+export interface NileExecutionGateResult {
+  ready: boolean;
+  stops: DecisionStopRecord[];
+}
+
+export function evaluateNileExecutionSafety(params: {
+  network: string;
+  leg: Partial<AllocationLeg>;
+  preview: ExecutionPreview;
+  approvedPreview?: ExecutionPreview | null;
+  approvalShown: boolean;
+  evidence: Array<Pick<DecisionEvidenceItem, "fetchedAt" | "reality">>;
+  valuationEvidence: Array<Pick<DecisionEvidenceItem, "fetchedAt" | "reality">>;
+  rulesPassed: boolean;
+  ruleViolation?: { ruleId: string; actual: string; required: string; reason?: string };
+  now?: number;
+  freshnessMs?: number;
+}): NileExecutionGateResult {
+  const now = params.now ?? Date.now();
+  const stops: DecisionStopRecord[] = [];
+  const addStop = (guardId: string, reason: string, ruleId: string | null = null) => {
+    stops.push(makeStopRecord({
+      timestamp: new Date(now).toISOString(),
+      stage: "PRE_SIGN",
+      ruleId,
+      guardId,
+      attemptedAction: params.preview.actionType ?? "UNKNOWN",
+      attemptedAmount: params.preview.amount ? `${params.preview.amount} ${params.preview.asset}` : null,
+      reason,
+    }));
+  };
+
+  if (!params.rulesPassed) {
+    const violation = params.ruleViolation;
+    addStop(
+      "INVESTMENT_RULES",
+      violation
+        ? violation.ruleId === "RULES_UNCONFIRMED"
+          ? "My Rules must be confirmed before signing."
+          : violation.ruleId === "VALUATION_UNAVAILABLE"
+          ? "Sourced USD valuation is unavailable; exposure rules cannot be verified before signing."
+          : violation.actual === "UNKNOWN"
+            ? `${violation.ruleId} could not be verified: ${violation.reason ?? violation.required}`
+          : violation.ruleId === "R2" || violation.ruleId === "MAX_VOLATILE_EXPOSURE"
+            ? `${violation.ruleId} violated: ${violation.actual} > ${violation.required}`
+            : `${violation.ruleId} violated: ${violation.reason ?? `${violation.actual}; required ${violation.required}`}`
+        : "One or more mandatory investment rules did not pass.",
+      violation?.ruleId ?? null
+    );
+  }
+
+  if (!params.network.toLowerCase().includes("nile") || params.preview.network !== "NILE") {
+    addStop("NETWORK_NILE", "Execution is only allowed on Nile Testnet.");
+  }
+  if (params.leg.executabilityClass !== "NILE_EXECUTABLE" || params.leg.executionNetwork !== "NILE") {
+    addStop("LEG_NOT_NILE_EXECUTABLE", "Selected allocation leg is not marked NILE_EXECUTABLE.");
+  }
+  const expectedContract = JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58;
+  if (params.preview.targetContract !== expectedContract) {
+    addStop("CONTRACT_NOT_ALLOWLISTED", "Target contract is not in the Nile jTRX allowlist.");
+  }
+  const expectedMethod = params.preview.actionType === "REDEEM" ? "redeem(uint256)" : "mint()";
+  if (!params.preview.actionType || params.preview.method !== expectedMethod) {
+    addStop("METHOD_NOT_ALLOWED", "Transaction method does not match the approved jTRX action.");
+  }
+  try {
+    const decimals = params.preview.actionType === "REDEEM" ? 8 : 6;
+    const expectedRaw = parseUnits(params.preview.amount, decimals);
+    if (!/^[1-9][0-9]*$/.test(params.preview.amountRaw) || expectedRaw !== params.preview.amountRaw) {
+      addStop("AMOUNT_MISMATCH", "Transaction amount does not match the approved amount in token base units.");
+    }
+    if (params.preview.actionType === "SUPPLY" && !Number.isSafeInteger(Number(params.preview.amountRaw))) {
+      addStop("AMOUNT_OUT_OF_RANGE", "Supply call value exceeds the safe integer range supported by this wallet flow.");
+    }
+  } catch {
+    addStop("AMOUNT_INVALID", "Transaction amount could not be converted safely to token base units.");
+  }
+
+  const marketEvidence = params.evidence;
+  if (!marketEvidence.length) {
+    addStop("MARKET_EVIDENCE_MISSING", "Required market evidence is unavailable.");
+  } else {
+    for (const item of marketEvidence) {
+      const fetchedAt = item.fetchedAt ? Date.parse(item.fetchedAt) : Number.NaN;
+      const fresh = Number.isFinite(fetchedAt) && now >= fetchedAt && now - fetchedAt <= (params.freshnessMs ?? 5 * 60 * 1000);
+      if (item.reality !== "LIVE_MAINNET" || !fresh) {
+        addStop("MARKET_EVIDENCE_STALE", "Required evidence is UNKNOWN / STALE; refresh market evidence before signing.");
+        break;
+      }
+    }
+  }
+
+  const valuationEvidence = params.valuationEvidence ?? [];
+  if (!valuationEvidence.length) {
+    addStop("HOLDING_VALUATION_MISSING", "Sourced USD valuation evidence for every holding is required before checking reserve and exposure rules.");
+  } else {
+    for (const item of valuationEvidence) {
+      const fetchedAt = item.fetchedAt ? Date.parse(item.fetchedAt) : Number.NaN;
+      const fresh = Number.isFinite(fetchedAt) && now >= fetchedAt && now - fetchedAt <= (params.freshnessMs ?? 5 * 60 * 1000);
+      if (item.reality !== "LIVE_MAINNET" || !fresh) {
+        addStop("HOLDING_VALUATION_STALE", "Holding USD valuations are UNKNOWN / STALE; refresh source-backed prices before signing.");
+        break;
+      }
+    }
+  }
+
+  if (!params.approvalShown || !params.approvedPreview) {
+    addStop("APPROVAL_NOT_RECORDED", "Amount, fee, risk, scope, network, contract, and method were not recorded as shown to the user.");
+  } else {
+    const preview = params.preview;
+    const approved = params.approvedPreview;
+    const sameShownFields = preview.actionType === approved.actionType &&
+      preview.amount === approved.amount &&
+      preview.amountRaw === approved.amountRaw &&
+      preview.network === approved.network &&
+      preview.targetContract === approved.targetContract &&
+      preview.method === approved.method &&
+      preview.estimatedFeeTrx === approved.estimatedFeeTrx &&
+      preview.riskNotice === approved.riskNotice &&
+      preview.approvalScope === approved.approvalScope;
+    if (!sameShownFields) addStop("APPROVAL_PARITY", "Transaction parameters changed after the user reviewed them.");
+  }
+
+  return { ready: stops.length === 0, stops };
+}
+
+export async function executeIfNileGatePasses<T>(
+  gate: NileExecutionGateResult,
+  invoke: () => Promise<T>
+): Promise<{ ready: boolean; stops: DecisionStopRecord[]; result?: T }> {
+  if (!gate.ready) return { ready: false, stops: gate.stops };
+  return { ready: true, stops: [], result: await invoke() };
 }
 
 export interface TransactionStatusResult {
@@ -112,23 +250,26 @@ export function buildPreflightChecks(params: {
   if (!isNile) ready = false;
 
   // 3. Balance sufficiency
-  const cleanedBalance = (params.trxBalance || "0").replace(/,/g, "").trim() || "0";
+  const cleanedBalance = (params.trxBalance || "").replace(/,/g, "").trim();
+  const balanceKnown = /^\d+(?:\.\d+)?$/.test(cleanedBalance);
   const cleanedRequired = (params.requiredAmount || "0").replace(/,/g, "").trim() || "0";
-  const balance = toDecimal(cleanedBalance);
+  const balance = toDecimal(balanceKnown ? cleanedBalance : "0");
   const required = toDecimal(cleanedRequired);
   // Energy reserve buffer (~20 TRX)
   const requiredTotal = params.asset === "TRX"
     ? required.plus(20)
     : toDecimal(20);
 
-  const hasSufficient = hasWallet && balance.gte(requiredTotal);
+  const hasSufficient = hasWallet && balanceKnown && balance.gte(requiredTotal);
   checks.push({
     key: "BALANCE_SUFFICIENT",
     name: "Sufficient Balance & Energy Buffer",
     passed: hasSufficient,
     message: hasSufficient
       ? `Balance (${balance.toFixed(2)} TRX) covers required amount + 20 TRX resource buffer.`
-      : `Insufficient TRX balance (${balance.toFixed(2)} TRX). Required: ${requiredTotal.toFixed(2)} TRX (includes 20 TRX buffer).`,
+      : !balanceKnown
+        ? "TRX balance is unavailable; refresh wallet data before continuing."
+        : `Insufficient TRX balance (${balance.toFixed(2)} TRX). Required: ${requiredTotal.toFixed(2)} TRX (includes 20 TRX buffer).`,
   });
   if (!hasSufficient) ready = false;
 
@@ -136,7 +277,7 @@ export function buildPreflightChecks(params: {
     ready,
     checks,
     requiredTotalTrx: requiredTotal.toFixed(2),
-    currentBalanceTrx: balance.toFixed(2),
+    currentBalanceTrx: balanceKnown ? balance.toFixed(2) : "UNAVAILABLE",
   };
 }
 
@@ -180,36 +321,42 @@ export function buildRedeemPreflightChecks(params: {
   if (!isNile) ready = false;
 
   // 3. jTRX Balance sufficiency (must hold at least the amount to redeem)
-  const rawJTrxBal = params.jTrxBalance || "0";
+  const rawJTrxBal = params.jTrxBalance || "";
   const rawRequired = params.requiredJTrxAmount || params.redeemAmount || "0";
-  const cleanedJTrxBalance = rawJTrxBal.replace(/,/g, "").trim() || "0";
+  const cleanedJTrxBalance = rawJTrxBal.replace(/,/g, "").trim();
   const cleanedRequired = rawRequired.replace(/,/g, "").trim() || "0";
-  const jTrxBal = toDecimal(cleanedJTrxBalance);
+  const jTrxBalanceKnown = /^\d+(?:\.\d+)?$/.test(cleanedJTrxBalance);
+  const jTrxBal = toDecimal(jTrxBalanceKnown ? cleanedJTrxBalance : "0");
   const required = toDecimal(cleanedRequired);
 
-  const hasTokens = hasWallet && jTrxBal.gt(0) && jTrxBal.gte(required);
+  const hasTokens = hasWallet && jTrxBalanceKnown && jTrxBal.gt(0) && jTrxBal.gte(required);
   checks.push({
     key: "BALANCE_SUFFICIENT",
     name: "Sufficient jTRX Position",
     passed: hasTokens,
     message: hasTokens
       ? `Position (${jTrxBal.toFixed(4)} jTRX) is sufficient for redemption of ${required.toFixed(4)} jTRX.`
-      : `Insufficient jTRX position (held: ${jTrxBal.toFixed(4)} jTRX / requested: ${required.toFixed(4)} jTRX). First supply TRX to obtain jTRX tokens.`,
+      : !jTrxBalanceKnown
+        ? "jTRX balance is unavailable; read the Nile contract balance before redemption."
+        : `Insufficient jTRX position (held: ${jTrxBal.toFixed(4)} jTRX / requested: ${required.toFixed(4)} jTRX). First supply TRX to obtain jTRX tokens.`,
   });
   if (!hasTokens) ready = false;
 
   // 4. Energy Fee Buffer (needs at least ~20 TRX to pay transaction energy fee)
-  const rawTrxBal = params.trxBalanceForFee || params.trxBalance || "0";
-  const cleanedTrxFeeBal = rawTrxBal.replace(/,/g, "").trim() || "0";
-  const trxFeeBal = toDecimal(cleanedTrxFeeBal);
-  const hasFeeBuffer = hasWallet && trxFeeBal.gte(20);
+  const rawTrxBal = params.trxBalanceForFee || params.trxBalance || "";
+  const cleanedTrxFeeBal = rawTrxBal.replace(/,/g, "").trim();
+  const trxFeeBalanceKnown = /^\d+(?:\.\d+)?$/.test(cleanedTrxFeeBal);
+  const trxFeeBal = toDecimal(trxFeeBalanceKnown ? cleanedTrxFeeBal : "0");
+  const hasFeeBuffer = hasWallet && trxFeeBalanceKnown && trxFeeBal.gte(20);
   checks.push({
     key: "ENERGY_FEE_BUFFER",
     name: "TRON Energy Buffer",
     passed: hasFeeBuffer,
     message: hasFeeBuffer
       ? `TRX fee buffer (${trxFeeBal.toFixed(2)} TRX) covers network energy requirement (>= 20 TRX).`
-      : `Insufficient TRX for gas/energy (${trxFeeBal.toFixed(2)} TRX). At least 20 TRX is required for Nile smart contract execution.`,
+      : !trxFeeBalanceKnown
+        ? "TRX fee balance is unavailable; refresh wallet data before continuing."
+        : `Insufficient TRX for gas/energy (${trxFeeBal.toFixed(2)} TRX). At least 20 TRX is required for Nile smart contract execution.`,
   });
   if (!hasFeeBuffer) ready = false;
 
@@ -217,7 +364,7 @@ export function buildRedeemPreflightChecks(params: {
     ready,
     checks,
     requiredTotalTrx: "20.00",
-    currentBalanceTrx: trxFeeBal.toFixed(2),
+    currentBalanceTrx: trxFeeBalanceKnown ? trxFeeBal.toFixed(2) : "UNAVAILABLE",
   };
 }
 
@@ -266,6 +413,26 @@ export function prepareJTrxRedeemPreview(
   };
 }
 
+function assertAllowedJTrxPreview(preview: ExecutionPreview, actionType: "SUPPLY" | "REDEEM"): void {
+  const expectedMethod = actionType === "SUPPLY" ? "mint()" : "redeem(uint256)";
+  const decimals = actionType === "SUPPLY" ? 6 : 8;
+  if (
+    preview.actionType !== actionType ||
+    preview.network !== "NILE" ||
+    preview.targetContract !== JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58 ||
+    preview.method !== expectedMethod
+  ) {
+    throw new Error("Execution preview is outside the Nile jTRX allowlist.");
+  }
+  const amount = toDecimal(preview.amount);
+  if (!amount.isFinite() || amount.lte(0) || parseUnits(preview.amount, decimals) !== preview.amountRaw) {
+    throw new Error("Execution amount is invalid or does not match its token base units.");
+  }
+  if (actionType === "SUPPLY" && !Number.isSafeInteger(Number(preview.amountRaw))) {
+    throw new Error("Supply call value exceeds the safe integer range supported by this wallet flow.");
+  }
+}
+
 /**
  * Executes jTRX supply on Nile testnet via TronLink provider window.tronWeb.
  */
@@ -273,6 +440,7 @@ export async function executeJTrxSupplyOnNile(
   preview: ExecutionPreview,
   tronWebInstance?: any
 ): Promise<{ txHash: string; status: "BROADCASTED" | "REJECTED" | "FAILED"; message: string }> {
+  assertAllowedJTrxPreview(preview, "SUPPLY");
   const tronWeb =
     tronWebInstance ||
     (typeof window !== "undefined" ? (window as any).tronWeb : null);
@@ -287,7 +455,7 @@ export async function executeJTrxSupplyOnNile(
       preview.targetContract
     );
 
-    const callValue = parseInt(preview.amountRaw, 10);
+    const callValue = Number(preview.amountRaw);
 
     // Call mint() with payable value in sun
     const tx = await contract.mint().send({
@@ -326,6 +494,7 @@ export async function executeJTrxRedeemOnNile(
   preview: ExecutionPreview,
   tronWebInstance?: any
 ): Promise<{ txHash: string; status: "BROADCASTED" | "REJECTED" | "FAILED"; message: string }> {
+  assertAllowedJTrxPreview(preview, "REDEEM");
   const tronWeb =
     tronWebInstance ||
     (typeof window !== "undefined" ? (window as any).tronWeb : null);

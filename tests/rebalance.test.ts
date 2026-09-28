@@ -10,8 +10,8 @@ import { NeedsProfile } from "../src/domain/allocation/types";
 describe("Historical Replay & Rebalance Engine", () => {
   const sampleProfile: NeedsProfile = {
     holdings: [
-      { asset: "USDD", amount: "1000", estimatedUsd: "1000" },
-      { asset: "TRX", amount: "2000", estimatedUsd: "500" },
+      { asset: "USDD", amount: "1000", usdValuation: { valueUsd: "1000", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
+      { asset: "TRX", amount: "2000", usdValuation: { valueUsd: "500", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
     ],
     horizonDays: 90,
     minimumLiquidUsd: "300",
@@ -22,9 +22,21 @@ describe("Historical Replay & Rebalance Engine", () => {
     assumptions: [],
   };
 
+  // A deterministic, explicitly simulated reward value lets the numeric replay
+  // impact test exercise known incentive inputs without claiming live evidence.
   const initialOpps = normalizeJustLendMarketList(
     JUSTLEND_FALLBACK_FIXTURE.data.tokenList as RawJustLendToken[]
-  );
+  ).map((opportunity) => {
+    const incentiveApy = opportunity.asset === "USDD" ? "0.03" : "0.000000";
+    return {
+        ...opportunity,
+        incentiveApy,
+        totalApy: (Number(opportunity.baseApy) + Number(incentiveApy)).toFixed(6),
+        incentiveReality: "SIMULATED" as const,
+        incentiveFetchedAt: null,
+        incentiveEvidenceTerms: "SIMULATED unit-test input; not market evidence.",
+    };
+  });
 
   const { plans } = generateAllocationPlans(sampleProfile, initialOpps);
   const originalPlan = plans[1]; // Plan B (Yield-oriented, holds jUSDD with incentive)
@@ -38,7 +50,7 @@ describe("Historical Replay & Rebalance Engine", () => {
     expect(proposal.triggered).toBe(false);
   });
 
-  it("triggers rebalance when mining incentive expires in Replay Scenario 1 and calculates return impact", () => {
+  it("triggers rebalance when recorded base yield drops and calculates simulated return impact", () => {
     const scenario1 = REPLAY_SCENARIOS[0];
     const degradedOpps = scenario1.simulatedMarketDelta(initialOpps);
 
@@ -50,7 +62,7 @@ describe("Historical Replay & Rebalance Engine", () => {
 
     expect(proposal.triggered).toBe(true);
     expect(proposal.checks.length).toBeGreaterThan(0);
-    expect(proposal.primaryReason).toContain("APY significantly decayed");
+    expect(proposal.primaryReason).toContain("recorded yield assumption is below its original value");
     expect(proposal.proposedPlan).toBeDefined();
 
     // Verify calculated return metrics
@@ -65,6 +77,20 @@ describe("Historical Replay & Rebalance Engine", () => {
 
     // Proposed plan still satisfies all hard constraints
     expect(proposal.proposedPlan.constraintChecks.every((c) => c.passed)).toBe(true);
+  });
+
+  it("keeps replay return impact unavailable when the original incentive source was missing", () => {
+    const unknownOpportunities = normalizeJustLendMarketList(
+      JUSTLEND_FALLBACK_FIXTURE.data.tokenList as RawJustLendToken[]
+    );
+    const unknownPlan = generateAllocationPlans(sampleProfile, unknownOpportunities).plans[1];
+    const changedOpportunities = REPLAY_SCENARIOS[0].simulatedMarketDelta(unknownOpportunities);
+    const proposal = detectRebalanceOpportunity(unknownPlan, sampleProfile, changedOpportunities);
+
+    expect(proposal.triggered).toBe(true);
+    expect(proposal.originalExpectedReturnUsd).toBe("UNAVAILABLE");
+    expect(proposal.deltaReturnUsd).toBe("UNAVAILABLE");
+    expect(proposal.deltaReturnPct).toBe("UNAVAILABLE");
   });
 
   it("triggers rebalance when liquid buffer falls below minimum requirement in Replay Scenario 2", () => {
@@ -101,4 +127,3 @@ describe("Historical Replay & Rebalance Engine", () => {
     expect(originalPlan.id).toBeDefined();
   });
 });
-

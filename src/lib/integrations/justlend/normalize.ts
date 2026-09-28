@@ -1,5 +1,5 @@
-import { RawJustLendToken } from "./schemas";
-import { YieldOpportunity } from "@/domain/allocation/types";
+import { RawJustLendMiningApyResponse, RawJustLendToken } from "./schemas";
+import { EvidenceReality, YieldOpportunity } from "@/domain/allocation/types";
 import { JUSTLEND_NILE_CONTRACTS } from "./contracts";
 import { SafeMath, toDecimal } from "@/lib/math/decimal";
 
@@ -12,9 +12,14 @@ const LEGACY_SYMBOLS = new Set([
   "jWBTT",
 ]);
 
+const MINING_APY_URL = "https://openapi.just.network/mining/apy";
+
 export function normalizeJustLendToken(
   token: RawJustLendToken,
-  timestamp: string = new Date().toISOString()
+  timestamp: string | null = null,
+  reality: EvidenceReality = "SNAPSHOT",
+  miningApy?: RawJustLendMiningApyResponse["data"] | null,
+  miningFetchedAt: string | null = null
 ): YieldOpportunity | null {
   // 1. Exclude legacy and paused markets
   if (LEGACY_SYMBOLS.has(token.symbol) || token.symbol.endsWith("OLD")) {
@@ -48,16 +53,18 @@ export function normalizeJustLendToken(
   // Base APY from market supplyRate
   const baseApy = baseRate.toFixed(6);
 
-  // Incentive APY: JustLend ecosystem mining rewards
-  // USDD & USDT occasionally have mining incentives
-  let incentiveApy = "0.000000";
-  if (asset === "USDD") {
-    incentiveApy = "0.032000"; // 3.2% USDD ecosystem yield incentive
-  } else if (asset === "USDT") {
-    incentiveApy = "0.015000"; // 1.5% mining incentive
-  }
-
-  const totalApy = SafeMath.add(baseApy, incentiveApy).toFixed(6);
+  // The documented USDD mining APY feed is separate from /lend/jtoken. A
+  // successful feed treats an omitted market key as no active mining; without
+  // a successfully parsed feed, incentive and combined APY remain unknown.
+  const rawIncentiveApy = miningApy === undefined || miningApy === null
+    ? null
+    : miningApy[token.address]?.USDD ?? "0";
+  const incentiveApy = rawIncentiveApy === null
+    ? null
+    : toDecimal(rawIncentiveApy).toFixed(6);
+  const totalApy = incentiveApy === null
+    ? null
+    : SafeMath.add(baseApy, incentiveApy).toFixed(6);
 
   // Nile execution capability check
   // jTRX is verified and active on Nile testnet
@@ -83,8 +90,15 @@ export function normalizeJustLendToken(
     baseApy,
     incentiveApy,
     totalApy,
+    incentiveSourceName: "JustLend OpenAPI (/mining/apy)",
+    incentiveSourceUrl: MINING_APY_URL,
+    incentiveFetchedAt: miningApy === undefined || miningApy === null ? null : miningFetchedAt,
+    incentiveReality: miningApy === undefined || miningApy === null ? null : reality,
+    incentiveEvidenceTerms: incentiveApy === null
+      ? "The separate USDD mining APY feed was unavailable for this observation; incentive return and combined APY are unknown."
+      : "Annualized USDD mining APY from the address-keyed /mining/apy feed. JustLend defines total supply APY as base supplyRate + mining APY; zero or omitted market entries indicate no active mining.",
 
-    tvlUsd: tvlUnderlying,
+    poolCapacitySourceUnits: tvlUnderlying,
     utilizationPct: toDecimal(token.totalBorrows).gt(0)
       ? SafeMath.div(
           token.totalBorrows,
@@ -102,7 +116,7 @@ export function normalizeJustLendToken(
       "Redemption consumes TRON Energy/Bandwidth or burns TRX for resources",
     ],
 
-    estimatedEntryCostUsd: "0.20", // Estimated resource cost (~15 TRX energy fee)
+    estimatedEntryCostUsd: "0.20", // Compass policy estimate; not an observed chain fee.
     estimatedExitCostUsd: "0.20",
 
     executable: isNileSupported,
@@ -116,6 +130,8 @@ export function normalizeJustLendToken(
     sourceName: "JustLend OpenAPI (lend/jtoken)",
     sourceUrl: "https://openapi.just.network/lend/jtoken",
     fetchedAt: timestamp,
+    reality,
+    evidenceTerms: "Base supply APY from the JustLend supplyRate field; variable by market utilization. USDD mining APY is read separately from the address-keyed /mining/apy feed.",
 
     assumptions: [
       "Supply APY is variable and adjusts per block based on market borrowing utilization",
@@ -129,9 +145,12 @@ export function normalizeJustLendToken(
 
 export function normalizeJustLendMarketList(
   tokens: RawJustLendToken[],
-  timestamp: string = new Date().toISOString()
+  timestamp: string | null = null,
+  reality: EvidenceReality = "SNAPSHOT",
+  miningApy?: RawJustLendMiningApyResponse["data"] | null,
+  miningFetchedAt: string | null = null
 ): YieldOpportunity[] {
   return tokens
-    .map((t) => normalizeJustLendToken(t, timestamp))
+    .map((t) => normalizeJustLendToken(t, timestamp, reality, miningApy, miningFetchedAt))
     .filter((opp): opp is YieldOpportunity => opp !== null);
 }

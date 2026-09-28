@@ -20,7 +20,7 @@ import {
 
 interface AiNeedsPlannerProps {
   currentProfile: NeedsProfile | null;
-  onProfileConfirmed: (profile: NeedsProfile) => void;
+  onProfileConfirmed: (profile: NeedsProfile, sourceQuote: string) => void;
   walletHoldings?: Array<{ asset: string; amount: string }>;
 }
 
@@ -54,8 +54,8 @@ export function AiNeedsPlanner({
   const [editableProfile, setEditableProfile] = useState<NeedsProfile>(
     currentProfile || {
       holdings: [
-        { asset: "USDD", amount: "1000", estimatedUsd: "1000" },
-        { asset: "TRX", amount: "2000", estimatedUsd: "500" },
+        { asset: "USDD", amount: "1000", usdValuation: { valueUsd: "1000", source: "TRON Compass demo fixture", fetchedAt: null, reality: "SIMULATED", terms: "Synthetic portfolio value for the local demo; not a market quote." } },
+        { asset: "TRX", amount: "2000", usdValuation: { valueUsd: "500", source: "TRON Compass demo fixture", fetchedAt: null, reality: "SIMULATED", terms: "Synthetic portfolio value for the local demo; not a market quote." } },
       ],
       horizonDays: 90,
       minimumLiquidUsd: "300",
@@ -115,7 +115,7 @@ export function AiNeedsPlanner({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-xl font-bold text-slate-900 tracking-tight">
-                AI 목표 해석 (AI Understands)
+                Talk to TRON Compass
               </h2>
               {lastProvider === "gemini" && (
                 <span className="text-[11px] bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded-full font-medium">
@@ -215,8 +215,22 @@ export function AiNeedsPlanner({
             </h3>
           </div>
           <span className="text-xs text-slate-400">
-            AI 의도 해석 → 수학 엔진 하드 제약으로 엄격 전달
+              My Rules · 확인 후 결정 엔진에 고정
           </span>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+          <div className="text-xs font-bold uppercase tracking-wide text-slate-700">My Rules</div>
+          <div className="grid gap-2 text-xs text-slate-700 sm:grid-cols-2">
+            <div><strong>R1 · Minimum liquid reserve:</strong> ≥ ${editableProfile.minimumLiquidUsd}</div>
+            <div><strong>R2 · Maximum volatile exposure:</strong> ≤ {(Number(editableProfile.maxVolatileExposurePct) * 100).toFixed(0)}%</div>
+          </div>
+          {inputText.trim() && (
+            <p className="border-l-2 border-blue-300 pl-3 text-[11px] leading-relaxed text-slate-500">
+              Source quote: “{inputText.trim()}”
+            </p>
+          )}
+          <p className="text-[11px] text-slate-500">Confirming edited values records a new rule version. AI drafts; only your confirmation makes these rules active.</p>
         </div>
 
         {/* 5-Item Structured Breakdown */}
@@ -274,7 +288,7 @@ export function AiNeedsPlanner({
                 ${editableProfile.minimumLiquidUsd}
               </div>
             )}
-            <span className="text-[11px] text-slate-400 block">상시 인출 보장</span>
+            <span className="text-[11px] text-slate-400 block">확정 전 검토할 규칙</span>
           </div>
 
           {/* Item 3: Risk Level */}
@@ -335,7 +349,7 @@ export function AiNeedsPlanner({
         <div className="p-3.5 rounded-xl bg-blue-50/70 border border-blue-200/80 text-[11px] text-blue-900 flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <span className="font-bold text-blue-950">AI & 코드 책임 원칙:</span>
-            <span>AI는 의도와 제약을 해석합니다. APY, 잔고, 수수료, 계약 주소 등 모든 재무 수치는 결정론적 코드와 온체인 검증 데이터에서만 산출됩니다.</span>
+            <span>AI drafts needs and rules. Asset quantities come from explicit user input or wallet reads; USD valuation, market rates, fees, and execution facts require recorded sources. Missing evidence blocks allocation.</span>
           </div>
           <span className="font-semibold text-blue-700 bg-white px-2 py-0.5 rounded border border-blue-200">
             No Hallucination
@@ -352,10 +366,10 @@ export function AiNeedsPlanner({
           </button>
 
           <button
-            onClick={() => onProfileConfirmed(editableProfile)}
+            onClick={() => onProfileConfirmed(editableProfile, inputText.trim())}
             className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-xs transition-all active:scale-[0.98] cursor-pointer"
           >
-            <span>이대로 계산하기</span>
+            <span>Confirm My Rules & compare</span>
             <ArrowRight className="w-4 h-4 text-slate-300" />
           </button>
         </div>

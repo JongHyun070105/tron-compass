@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { MockLLMProvider } from "../src/lib/ai/mock-provider";
 import { ExtractedProfileSchema } from "../src/lib/ai/schemas";
+import { extractGroundedHoldings } from "../src/lib/ai/grounding";
 
 describe("AI Needs Analysis Layer", () => {
   const mock = new MockLLMProvider();
 
-  it("extracts holdings, horizon, and minimum liquidity from natural language", async () => {
+  it("extracts only explicitly stated holding quantities, horizon, and minimum liquidity", async () => {
     const userInput =
       "I have 1,000 USDD and some TRX. I want to invest for about 90 days, but at least $300 must remain liquid. I prefer low risk.";
 
@@ -19,9 +20,26 @@ describe("AI Needs Analysis Layer", () => {
     expect(usdd?.amount).toBe("1000");
 
     const trx = res.profile.holdings.find((h) => h.asset === "TRX");
-    expect(trx).toBeDefined();
+    expect(trx).toBeUndefined();
 
     expect(res.summary).toContain("1000 USDD");
+  });
+
+  it("does not infer or value a balance when the user mentions only an asset", async () => {
+    const res = await mock.extractNeeds({ userInput: "I have some TRX." });
+    expect(res.profile.holdings).toEqual([]);
+    expect(res.profile.missingFields).toContain("보유 자산 수량");
+    expect(res.followUpQuestion).toContain("수량");
+  });
+
+  it("uses an explicit wallet read for token quantity and never assigns a USD value", () => {
+    expect(extractGroundedHoldings("I want to invest my USDD", [
+      { asset: "TRX", amount: "12.5" },
+      { asset: "USDD", amount: "UNAVAILABLE" },
+    ])).toEqual([{ asset: "TRX", amount: "12.5" }]);
+    expect(extractGroundedHoldings("I have 1,500 USDD and some TRX")).toEqual([
+      { asset: "USDD", amount: "1500" },
+    ]);
   });
 
   it("flags missing fields when critical parameters are omitted", async () => {

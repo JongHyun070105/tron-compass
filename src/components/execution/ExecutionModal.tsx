@@ -1,7 +1,13 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { AllocationPlan, AllocationLeg } from "@/domain/allocation/types";
+import { NeedsProfile, YieldOpportunity } from "@/domain/allocation/types";
+import { evaluateDecisionRules } from "@/domain/allocation/rules";
+import { computeTotalCapitalUsd } from "@/domain/allocation/engine";
+import { DecisionReceipt, DecisionStopRecord, makeStopRecord, refreshDecisionReceiptIntegrity } from "@/domain/decision/receipt";
+import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
+import { fetchNileJTrxBalance, fetchTronWalletBalances, detectActiveTronNetwork } from "@/lib/tron/network";
 import {
   buildPreflightChecks,
   buildRedeemPreflightChecks,
@@ -13,8 +19,11 @@ import {
   TransactionLifecycleState,
   ExecutionPreview,
   PreflightResult,
+  evaluateNileExecutionSafety,
+  executeIfNileGatePasses,
 } from "@/lib/tron/transaction";
 import { compassStorage } from "@/lib/persistence/storage";
+import { toDecimal } from "@/lib/math/decimal";
 import {
   X,
   ShieldCheck,
@@ -30,6 +39,7 @@ import {
   Check,
   ArrowUpRight,
   ArrowDownLeft,
+  Info,
 } from "lucide-react";
 
 interface ExecutionModalProps {
@@ -41,10 +51,15 @@ interface ExecutionModalProps {
   isWalletConnected: boolean;
   isDemoMode: boolean;
   trxBalance: string;
-  jTrxBalance?: string;
+  jTrxBalance?: string | null;
   networkName?: string;
   initialMode?: "SUPPLY" | "REDEEM";
   onExecutionCompleted?: (txHash: string) => void;
+  profile: NeedsProfile;
+  opportunities: YieldOpportunity[];
+  usddEvidence: UsddProtocolEvidence | null;
+  decisionReceipt: DecisionReceipt | null;
+  onDecisionReceiptUpdate?: (receipt: DecisionReceipt) => Promise<void> | void;
 }
 
 export function ExecutionModal({
@@ -56,19 +71,34 @@ export function ExecutionModal({
   isWalletConnected,
   isDemoMode,
   trxBalance,
-  jTrxBalance = "250.00",
+  jTrxBalance = null,
   networkName = "Nile Testnet",
   initialMode = "SUPPLY",
+  profile,
+  opportunities,
+  usddEvidence,
+  decisionReceipt,
+  onDecisionReceiptUpdate,
   onExecutionCompleted,
 }: ExecutionModalProps) {
   const [actionMode, setActionMode] = useState<"SUPPLY" | "REDEEM">(initialMode);
   const [supplyAmount, setSupplyAmount] = useState<string>("50");
   const [redeemAmount, setRedeemAmount] = useState<string>("100");
   const [hasAuthorized, setHasAuthorized] = useState<boolean>(false);
+  const [approvedPreview, setApprovedPreview] = useState<ExecutionPreview | null>(null);
   const [lifecycleState, setLifecycleState] = useState<TransactionLifecycleState>("REVIEW");
   const [txHash, setTxHash] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [isTechnicalExpanded, setIsTechnicalExpanded] = useState<boolean>(false);
+  const receiptRef = useRef<DecisionReceipt | null>(decisionReceipt);
+
+  useEffect(() => {
+    if (decisionReceipt && decisionReceipt.id !== receiptRef.current?.id) {
+      receiptRef.current = decisionReceipt;
+    } else if (decisionReceipt) {
+      receiptRef.current = decisionReceipt;
+    }
+  }, [decisionReceipt]);
 
   // Synchronize initialMode whenever modal opens
   useEffect(() => {
@@ -92,7 +122,7 @@ export function ExecutionModal({
           isWalletConnected: isWalletConnected || isDemoMode,
           walletAddress: walletAddress || (isDemoMode ? "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb" : ""),
           currentNetwork: isDemoMode ? "nile" : networkName,
-          jTrxBalance: isDemoMode ? "250.00" : jTrxBalance,
+          jTrxBalance: isDemoMode ? "250.00" : (jTrxBalance ?? "0"),
           requiredJTrxAmount: redeemAmount,
           trxBalanceForFee: isDemoMode ? "500.00" : trxBalance,
         });
@@ -112,6 +142,7 @@ export function ExecutionModal({
   useEffect(() => {
     if (isOpen) {
       setHasAuthorized(false);
+      setApprovedPreview(null);
       setTxHash(null);
       setIsTechnicalExpanded(false);
 
@@ -142,7 +173,7 @@ export function ExecutionModal({
     if (["REVIEW", "PREFLIGHT_FAILED", "READY_TO_SIGN"].includes(lifecycleState)) {
       if (!preflight.ready) {
         setLifecycleState("PREFLIGHT_FAILED");
-      } else if (hasAuthorized) {
+      } else if (hasAuthorized && approvedPreview) {
         setLifecycleState("READY_TO_SIGN");
         setStatusMessage("서명 준비 완료: [트랜잭션 승인 및 서명] 버튼을 눌러 진행해 주세요.");
       } else {
@@ -150,114 +181,325 @@ export function ExecutionModal({
         setStatusMessage("실행 조건을 검토하신 후 동의 체크박스를 선택해 주세요.");
       }
     }
-  }, [hasAuthorized, preflight.ready, lifecycleState]);
+  }, [hasAuthorized, approvedPreview, preflight.ready, lifecycleState]);
 
   if (!isOpen || !plan || !leg) return null;
 
+  const persistReceipt = async (next: DecisionReceipt) => {
+    if (!onDecisionReceiptUpdate) return;
+    const current = receiptRef.current?.id === next.id ? receiptRef.current : null;
+    const merged: DecisionReceipt = current ? {
+      ...current,
+      ...next,
+      approval: {
+        shown: next.approval.shown ?? current.approval.shown,
+        signer: next.approval.signer ?? current.approval.signer,
+        approvedAt: next.approval.approvedAt ?? current.approval.approvedAt,
+      },
+      execution: Object.fromEntries(Object.entries(next.execution).map(([key, value]) => [
+        key,
+        value === null ? (current.execution as any)[key] : value,
+      ])) as DecisionReceipt["execution"],
+      stops: Array.from(new Map([...current.stops, ...next.stops].map((item) => [item.id, item])).values()),
+      reviews: next.reviews.length >= current.reviews.length ? next.reviews : current.reviews,
+    } : next;
+    const updated = await refreshDecisionReceiptIntegrity(merged);
+    receiptRef.current = updated;
+    await onDecisionReceiptUpdate(updated);
+  };
+
   const handleExecute = async () => {
-    if (lifecycleState !== "READY_TO_SIGN" || !hasAuthorized || !preflight.ready) {
+    if (!isDemoMode && lifecycleState === "PREFLIGHT_FAILED") {
+      const failedChecks = preflight.checks.filter((check) => !check.passed);
+      const stops = failedChecks.map((check) => makeStopRecord({
+        timestamp: new Date().toISOString(),
+        stage: "PRE_SIGN",
+        ruleId: null,
+        guardId: check.key,
+        attemptedAction: actionMode,
+        attemptedAmount: `${preview.amount} ${preview.asset}`,
+        reason: check.message,
+      }));
+      setLifecycleState("STOPPED");
+      setStatusMessage(`STOPPED · ${failedChecks.map((check) => check.message).join(" · ")}`);
+      if (decisionReceipt && stops.length) {
+        await persistReceipt({ ...decisionReceipt, stops: [...decisionReceipt.stops, ...stops] });
+      }
+      return;
+    }
+    if (lifecycleState !== "READY_TO_SIGN" || !hasAuthorized || !approvedPreview || !preflight.ready) return;
+
+    const now = new Date().toISOString();
+    const approvalShown = {
+      amount: `${preview.amount} ${preview.asset}`,
+      estimatedFee: preview.estimatedFeeTrx,
+      risks: [preview.riskNotice],
+      scope: preview.approvalScope,
+      network: isDemoMode ? "NILE (SIMULATED)" : preview.network,
+      contract: preview.targetContract,
+      method: preview.method,
+    };
+
+    if (isDemoMode) {
+      setLifecycleState("SIMULATED");
+      setStatusMessage("SIMULATED OUTCOME: no TronLink request, transaction hash, broadcast, or chain confirmation was created.");
+      if (decisionReceipt) {
+        await persistReceipt({
+          ...decisionReceipt,
+          approval: { shown: approvalShown, signer: "DEMO SIMULATION", approvedAt: now },
+          execution: {
+            ...decisionReceipt.execution,
+            network: "NILE (SIMULATED)",
+            contract: preview.targetContract,
+            method: preview.method,
+            callValue: actionMode === "SUPPLY" ? preview.amountRaw : null,
+            txHash: null,
+            blockNumber: null,
+            result: "SIMULATED",
+          },
+        });
+      }
+      await compassStorage.recordExecution({
+        id: `exec-demo-${Date.now()}`,
+        planId: plan.id,
+        walletAddress: walletAddress || "DEMO",
+        txHash: "",
+        asset: actionMode === "SUPPLY" ? "TRX" : "jTRX",
+        amount: actionMode === "SUPPLY" ? supplyAmount : redeemAmount,
+        targetContract: preview.targetContract,
+        network: "NILE",
+        dataScope: "DEMO",
+        isDemo: true,
+        status: "SIMULATED",
+        timestamp: now,
+      });
       return;
     }
 
-    setLifecycleState("AWAITING_WALLET_SIGNATURE");
-    setStatusMessage("TronLink 지갑 서명 요청 중입니다. 팝업 창에서 서명을 승인해 주세요...");
+    const frozenRules = decisionReceipt?.rules.items ?? profile.investmentRules ?? [];
+    const confirmed = !!decisionReceipt?.needsConfirmedAt && frozenRules.length > 0;
+    const frozenProfile: NeedsProfile = { ...profile, investmentRules: frozenRules };
+    let candidateAllocations = [...plan.allocations];
+    let resizedAmountHasUsdValue = true;
+    if (actionMode === "SUPPLY") {
+      const legUnits = Number(leg.amount);
+      const dollarsPerUnit = Number.isFinite(legUnits) && legUnits > 0
+        ? Number(leg.usdValue) / legUnits
+        : Number.NaN;
+      resizedAmountHasUsdValue = Number.isFinite(dollarsPerUnit) && dollarsPerUnit > 0;
+      const amountUsd = resizedAmountHasUsdValue
+        ? toDecimal(supplyAmount).times(dollarsPerUnit).toFixed(2)
+        : "0.00";
+      const replacement = { ...leg, asset: "TRX", amount: supplyAmount, usdValue: amountUsd };
+      const selectedIndex = candidateAllocations.findIndex((item) => item.productId === leg.productId);
+      if (selectedIndex >= 0) candidateAllocations[selectedIndex] = replacement;
+      else candidateAllocations.push(replacement);
+    }
+    const ruleResult = confirmed && resizedAmountHasUsdValue
+      ? evaluateDecisionRules(frozenProfile, computeTotalCapitalUsd(frozenProfile), candidateAllocations, opportunities)
+      : { passed: false, checks: [] };
+    const failedRule = ruleResult.checks.find((item) => !item.passed);
+    const rawRequired = failedRule?.required.replace(/^[<>]=?\s*/, "") ?? "confirmed My Rules";
+    const ruleViolation = confirmed
+      ? failedRule
+        ? { ruleId: failedRule.ruleId ?? failedRule.key, actual: failedRule.actual, required: rawRequired, reason: failedRule.detail }
+        : undefined
+      : { ruleId: "RULES_UNCONFIRMED", actual: "unconfirmed", required: "confirmed My Rules" };
+    const finalRuleViolation = resizedAmountHasUsdValue
+      ? ruleViolation
+      : { ruleId: "VALUATION_UNAVAILABLE", actual: "UNKNOWN", required: "sourced USD valuation" };
+
+    const planIds = new Set(plan.allocations.map((item) => item.productId));
+    const requiredMarketEvidence = opportunities
+      .filter((item) => planIds.has(item.id))
+      .flatMap((item) => [
+        { fetchedAt: item.fetchedAt, reality: item.reality },
+        {
+          fetchedAt: item.incentiveFetchedAt ?? null,
+          reality: item.incentiveReality ?? "SNAPSHOT",
+        },
+      ]);
+    if (plan.allocations.some((item) => item.asset === "USDD")) {
+      requiredMarketEvidence.push({
+        fetchedAt: usddEvidence?.fetchedAt ?? null,
+        reality: usddEvidence?.reality ?? "SNAPSHOT",
+      });
+    }
+    const valuationEvidence = frozenProfile.holdings
+      .filter((holding) => Number(holding.amount) > 0)
+      .map((holding) => ({
+        fetchedAt: holding.usdValuation?.fetchedAt ?? null,
+        reality: holding.usdValuation?.reality ?? "SNAPSHOT" as const,
+      }));
+
+    const tronWeb = (window as any).tronWeb;
+    const activeNetwork = detectActiveTronNetwork(tronWeb).name;
+    const gate = evaluateNileExecutionSafety({
+      network: activeNetwork || networkName,
+      leg,
+      preview,
+      approvedPreview,
+      approvalShown: hasAuthorized && !!approvedPreview,
+      evidence: requiredMarketEvidence,
+      valuationEvidence,
+      rulesPassed: confirmed && ruleResult.passed,
+      ruleViolation: finalRuleViolation,
+      now: Date.now(),
+    });
+
+    if (decisionReceipt) {
+      await persistReceipt({
+        ...decisionReceipt,
+        approval: { shown: approvalShown, signer: walletAddress || null, approvedAt: now },
+      });
+    }
+
+    if (!gate.ready) {
+      setLifecycleState("STOPPED");
+      setStatusMessage(`STOPPED · ${gate.stops[0]?.reason ?? "Nile execution guard failed."}`);
+      if (decisionReceipt) {
+        const stops: DecisionStopRecord[] = [...decisionReceipt.stops, ...gate.stops];
+        await persistReceipt({
+          ...decisionReceipt,
+          approval: { shown: approvalShown, signer: walletAddress || null, approvedAt: now },
+          stops,
+        });
+      }
+      return;
+    }
+
+    if (decisionReceipt) {
+      await persistReceipt({
+        ...decisionReceipt,
+        approval: { shown: approvalShown, signer: walletAddress || null, approvedAt: now },
+        execution: {
+          ...decisionReceipt.execution,
+          network: "NILE",
+          contract: preview.targetContract,
+          method: preview.method,
+          callValue: actionMode === "SUPPLY" ? preview.amountRaw : null,
+          result: "AWAITING_SIGNATURE",
+        },
+      });
+    }
 
     try {
-      if (isDemoMode) {
-        // Simulated Nile transaction strictly tagged as DEMO
-        await new Promise((r) => setTimeout(r, 1200));
-        const demoHash =
-          actionMode === "SUPPLY"
-            ? "7f8b9c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b"
-            : "4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b7f8b9c1d2e3f";
-        setTxHash(demoHash);
-        setLifecycleState("BROADCASTING");
-        setStatusMessage("Nile 테스트넷으로 트랜잭션 브로드캐스트 완료. 온체인 영수증 확인 중...");
+      const finalGate = evaluateNileExecutionSafety({
+        network: detectActiveTronNetwork((window as any).tronWeb).name || networkName,
+        leg,
+        preview,
+        approvedPreview,
+        approvalShown: hasAuthorized && !!approvedPreview,
+        evidence: requiredMarketEvidence,
+        valuationEvidence,
+        rulesPassed: confirmed && ruleResult.passed,
+        ruleViolation: finalRuleViolation,
+        now: Date.now(),
+      });
+      if (!finalGate.ready) {
+        setLifecycleState("STOPPED");
+        setStatusMessage(`STOPPED · ${finalGate.stops[0]?.reason ?? "Nile execution guard failed."}`);
+        if (decisionReceipt) await persistReceipt({ ...decisionReceipt, stops: [...decisionReceipt.stops, ...finalGate.stops] });
+        return;
+      }
+      setLifecycleState("AWAITING_WALLET_SIGNATURE");
+      setStatusMessage("TronLink 서명 대기 중입니다. 승인 전 실제 수량과 컨트랙트를 지갑 창에서도 확인해 주세요.");
+      const guarded = await executeIfNileGatePasses(finalGate, () =>
+        actionMode === "SUPPLY"
+          ? executeJTrxSupplyOnNile(preview, tronWeb)
+          : executeJTrxRedeemOnNile(preview, tronWeb)
+      );
+      if (!guarded.ready || !guarded.result) {
+        setLifecycleState("STOPPED");
+        setStatusMessage(`STOPPED · ${guarded.stops[0]?.reason ?? "Nile execution guard failed."}`);
+        if (decisionReceipt) await persistReceipt({ ...decisionReceipt, stops: [...decisionReceipt.stops, ...guarded.stops] });
+        return;
+      }
+      const res = guarded.result;
+      if (res.status === "REJECTED") {
+        setLifecycleState("REJECTED");
+        setStatusMessage("TronLink user rejected the request. No confirmed transaction was recorded.");
+        if (decisionReceipt) await persistReceipt({
+          ...decisionReceipt,
+          execution: { ...decisionReceipt.execution, result: "FAILED" },
+        });
+        return;
+      }
 
-        await new Promise((r) => setTimeout(r, 1500));
-        setLifecycleState("CONFIRMING");
+      setTxHash(res.txHash);
+      setLifecycleState("BROADCASTING");
+      setStatusMessage("Nile transaction broadcast. Waiting for independent TronGrid verification.");
+      if (decisionReceipt) await persistReceipt({
+        ...decisionReceipt,
+        execution: {
+          ...decisionReceipt.execution,
+          network: "NILE",
+          contract: preview.targetContract,
+          method: preview.method,
+          callValue: actionMode === "SUPPLY" ? preview.amountRaw : null,
+          txHash: res.txHash,
+          result: "BROADCAST",
+        },
+      });
 
-        await new Promise((r) => setTimeout(r, 1000));
+      setLifecycleState("CONFIRMING");
+      setStatusMessage("TronGrid is checking block inclusion and execution result.");
+      if (decisionReceipt) await persistReceipt({
+        ...decisionReceipt,
+        execution: { ...decisionReceipt.execution, txHash: res.txHash, result: "PENDING" },
+      });
+      const pollRes = await pollTransactionStatus(res.txHash, 10, 2500, "nile");
+
+      if (pollRes.status === "CONFIRMED") {
         setLifecycleState("CONFIRMED");
-        setStatusMessage(
-          actionMode === "SUPPLY"
-            ? "예치 트랜잭션이 온체인 블록에 최종 확정(CONFIRMED)되었습니다! (체험 모드)"
-            : "인출/상환 트랜잭션이 온체인 블록에 최종 확정(CONFIRMED)되었습니다! (체험 모드)"
-        );
-
+        setStatusMessage("TronGrid confirmed the Nile block inclusion and successful execution.");
+        const afterBalance = actionMode === "SUPPLY"
+          ? (await fetchTronWalletBalances(walletAddress, tronWeb, "nile")).trx
+          : (await fetchNileJTrxBalance(walletAddress, tronWeb, "nile")) ?? null;
+        if (decisionReceipt) await persistReceipt({
+          ...decisionReceipt,
+          execution: {
+            ...decisionReceipt.execution,
+            network: "NILE",
+            contract: preview.targetContract,
+            method: preview.method,
+            callValue: actionMode === "SUPPLY" ? preview.amountRaw : null,
+            txHash: res.txHash,
+            blockNumber: pollRes.blockNumber ?? null,
+            result: "CONFIRMED",
+            actualFee: null,
+            balanceBefore: actionMode === "SUPPLY" ? trxBalance : jTrxBalance,
+            balanceAfter: afterBalance,
+          },
+        });
         await compassStorage.recordExecution({
-          id: `exec-demo-${Date.now()}`,
+          id: `exec-nile-${Date.now()}`,
           planId: plan.id,
-          walletAddress: walletAddress || "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
-          txHash: demoHash,
+          walletAddress,
+          txHash: res.txHash,
           asset: actionMode === "SUPPLY" ? "TRX" : "jTRX",
           amount: actionMode === "SUPPLY" ? supplyAmount : redeemAmount,
           targetContract: preview.targetContract,
           network: "NILE",
-          dataScope: "DEMO",
-          isDemo: true,
+          dataScope: "LIVE_NILE",
+          isDemo: false,
           status: "CONFIRMED",
           timestamp: new Date().toISOString(),
         });
-
-        if (onExecutionCompleted) onExecutionCompleted(demoHash);
+        onExecutionCompleted?.(res.txHash);
+      } else if (pollRes.status === "FAILED") {
+        setLifecycleState("FAILED");
+        setStatusMessage(`TronGrid verified transaction failure: ${pollRes.contractResult || "contract execution failed"}`);
+        if (decisionReceipt) await persistReceipt({ ...decisionReceipt, execution: { ...decisionReceipt.execution, txHash: res.txHash, result: "FAILED" } });
       } else {
-        // Real TronLink signature & broadcast on Nile
-        const res =
-          actionMode === "SUPPLY"
-            ? await executeJTrxSupplyOnNile(preview)
-            : await executeJTrxRedeemOnNile(preview);
-
-        if (res.status === "REJECTED") {
-          setLifecycleState("REJECTED");
-          setStatusMessage("사용자가 지갑 서명을 취소/거부했습니다.");
-          return;
-        }
-
-        setTxHash(res.txHash);
-        setLifecycleState("BROADCASTING");
-        setStatusMessage("Nile 테스트넷 브로드캐스트 완료. 트랜잭션 영수증 확인 중...");
-
         setLifecycleState("CONFIRMING");
-        setStatusMessage("TronGrid 서버 검증을 통해 온체인 블록 영수증을 확인하고 있습니다...");
-
-        const pollRes = await pollTransactionStatus(res.txHash, 10, 2500, "nile");
-
-        if (pollRes.status === "CONFIRMED") {
-          setLifecycleState("CONFIRMED");
-          setStatusMessage("트랜잭션이 Nile 온체인 블록에 최종 확정(CONFIRMED)되었습니다!");
-
-          await compassStorage.recordExecution({
-            id: `exec-nile-${Date.now()}`,
-            planId: plan.id,
-            walletAddress,
-            txHash: res.txHash,
-            asset: actionMode === "SUPPLY" ? "TRX" : "jTRX",
-            amount: actionMode === "SUPPLY" ? supplyAmount : redeemAmount,
-            targetContract: preview.targetContract,
-            network: "NILE",
-            dataScope: "LIVE_NILE",
-            isDemo: false,
-            status: "CONFIRMED",
-            timestamp: new Date().toISOString(),
-          });
-
-          if (onExecutionCompleted) onExecutionCompleted(res.txHash);
-        } else if (pollRes.status === "FAILED") {
-          setLifecycleState("FAILED");
-          setStatusMessage(`트랜잭션 온체인 실행 실패: ${pollRes.contractResult || "자원 부족 또는 Revert"}`);
-          return;
-        } else {
-          setLifecycleState("CONFIRMING");
-          setStatusMessage(
-            "트랜잭션이 브로드캐스트되었으나 아직 블록 확정 대기 중(PENDING)입니다. 아래 탐색기 링크에서 상태를 확인해 주세요."
-          );
-          return;
-        }
+        setStatusMessage("BROADCAST / PENDING · TronGrid has not confirmed the transaction yet.");
+        if (decisionReceipt) await persistReceipt({ ...decisionReceipt, execution: { ...decisionReceipt.execution, txHash: res.txHash, result: "PENDING" } });
       }
     } catch (err: any) {
       setLifecycleState("FAILED");
-      setStatusMessage(err?.message || "트랜잭션 처리 중 오류가 발생했습니다.");
+      setStatusMessage(err?.message || "Transaction processing failed.");
+      if (decisionReceipt) await persistReceipt({ ...decisionReceipt, execution: { ...decisionReceipt.execution, result: "FAILED" } });
     }
   };
 
@@ -307,7 +549,7 @@ export function ExecutionModal({
                   Nile 실행 검토 및 서명
                 </h3>
                 <span className="text-[11px] bg-purple-100 text-purple-800 font-semibold px-2 py-0.5 rounded-full">
-                  {isDemoMode ? "체험 모드" : "Nile Testnet"}
+                  {isDemoMode ? "SIMULATED · 체험 모드" : "Nile Testnet"}
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
@@ -330,10 +572,12 @@ export function ExecutionModal({
             <button
               onClick={() => {
                 if (lifecycleState === "REVIEW" || lifecycleState === "PREFLIGHT_FAILED" || lifecycleState === "READY_TO_SIGN") {
+                  setHasAuthorized(false);
+                  setApprovedPreview(null);
                   setActionMode("SUPPLY");
                 }
               }}
-              disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED"].includes(lifecycleState)}
+              disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED", "SIMULATED"].includes(lifecycleState)}
               className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 actionMode === "SUPPLY"
                   ? "bg-white text-slate-900 shadow-2xs"
@@ -347,10 +591,12 @@ export function ExecutionModal({
             <button
               onClick={() => {
                 if (lifecycleState === "REVIEW" || lifecycleState === "PREFLIGHT_FAILED" || lifecycleState === "READY_TO_SIGN") {
+                  setHasAuthorized(false);
+                  setApprovedPreview(null);
                   setActionMode("REDEEM");
                 }
               }}
-              disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED"].includes(lifecycleState)}
+              disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED", "SIMULATED"].includes(lifecycleState)}
               className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 actionMode === "REDEEM"
                   ? "bg-white text-slate-900 shadow-2xs"
@@ -419,7 +665,7 @@ export function ExecutionModal({
               </div>
               <div>
                 <span className="text-slate-400 block text-[11px]">네트워크</span>
-                <span className="text-purple-700 font-semibold text-sm">Nile Testnet</span>
+                  <span className="text-purple-700 font-semibold text-sm">Nile Testnet · connected: {isDemoMode ? "SIMULATED" : networkName}</span>
               </div>
               <div>
                 <span className="text-slate-400 block text-[11px]">
@@ -428,16 +674,16 @@ export function ExecutionModal({
                 <span className="font-mono font-bold text-sm text-slate-900">
                   {actionMode === "SUPPLY"
                     ? isDemoMode
-                      ? "500.00 TRX"
+                      ? "SIMULATED · 500.00 TRX"
                       : `${trxBalance} TRX`
                     : isDemoMode
-                    ? "250.00 jTRX"
-                    : `${jTrxBalance} jTRX`}
+                    ? "SIMULATED · 250.00 jTRX"
+                    : jTrxBalance === null ? "UNAVAILABLE" : `${jTrxBalance} jTRX`}
                 </span>
               </div>
               <div>
-                <span className="text-slate-400 block text-[11px]">예상 수수료</span>
-                <span className="text-slate-600 font-mono text-sm">15 ~ 25 TRX (에너지)</span>
+                <span className="text-slate-400 block text-[11px]">수수료 안내</span>
+                <span className="text-slate-600 text-[11px]">{preview.estimatedFeeTrx} · actual fee unavailable</span>
               </div>
             </div>
 
@@ -449,19 +695,33 @@ export function ExecutionModal({
               <div className="flex items-center gap-2">
                 <input
                   type="number"
-                  disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED"].includes(lifecycleState)}
+                  disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED", "SIMULATED"].includes(lifecycleState)}
                   value={actionMode === "SUPPLY" ? supplyAmount : redeemAmount}
-                  onChange={(e) =>
-                    actionMode === "SUPPLY"
-                      ? setSupplyAmount(e.target.value)
-                      : setRedeemAmount(e.target.value)
-                  }
+                  onChange={(e) => {
+                    setHasAuthorized(false);
+                    setApprovedPreview(null);
+                    setLifecycleState("REVIEW");
+                    actionMode === "SUPPLY" ? setSupplyAmount(e.target.value) : setRedeemAmount(e.target.value);
+                  }}
                   className="w-28 bg-white border border-slate-300 text-slate-900 font-mono font-bold text-sm rounded-xl px-3 py-2 text-right focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 shadow-2xs"
                 />
                 <span className="text-xs font-bold text-slate-700">
                   {actionMode === "SUPPLY" ? "TRX" : "jTRX"}
                 </span>
               </div>
+            </div>
+
+            <div className="rounded-xl border border-indigo-200 bg-white p-3 text-[11px]">
+              <div className="mb-2 font-bold text-slate-800">Approval sheet · review before wallet request</div>
+              <dl className="grid grid-cols-[90px_1fr] gap-x-2 gap-y-1.5">
+                <dt className="text-slate-500">Amount</dt><dd className="font-semibold text-slate-900">{preview.amount} {preview.asset}</dd>
+                <dt className="text-slate-500">Target network</dt><dd className="font-semibold text-slate-900">Nile Testnet · current: {isDemoMode ? "SIMULATED" : networkName}</dd>
+                <dt className="text-slate-500">Contract</dt><dd className="break-all font-mono text-slate-800">{preview.targetContract}</dd>
+                <dt className="text-slate-500">Method</dt><dd className="font-mono text-slate-800">{preview.method}</dd>
+                <dt className="text-slate-500">Approval scope</dt><dd className="text-slate-700">{preview.approvalScope}</dd>
+                <dt className="text-slate-500">Risk</dt><dd className="text-slate-700">{preview.riskNotice}</dd>
+              </dl>
+              <p className="mt-2 border-t border-slate-100 pt-2 text-[10px] text-amber-800">Fee buffer and fee estimate are Compass policy values; actual transaction fee is not known before chain verification.</p>
             </div>
           </div>
 
@@ -543,19 +803,25 @@ export function ExecutionModal({
           </div>
 
           {/* User Confirmation Checkbox */}
-          {lifecycleState !== "CONFIRMED" && (
+          {!(["CONFIRMED", "SIMULATED"].includes(lifecycleState)) && (
             <div className="p-4 rounded-2xl bg-purple-50/70 border border-purple-200/80 flex items-start gap-3">
               <input
                 type="checkbox"
                 id="auth-check"
                 disabled={isInsufficientFunds || ["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING"].includes(lifecycleState)}
                 checked={hasAuthorized}
-                onChange={(e) => setHasAuthorized(e.target.checked)}
+                onChange={(e) => {
+                  setHasAuthorized(e.target.checked);
+                  setApprovedPreview(e.target.checked ? preview : null);
+                  setLifecycleState("REVIEW");
+                }}
                 className="mt-0.5 rounded border-slate-300 text-purple-600 focus:ring-purple-500 w-4 h-4 cursor-pointer disabled:opacity-50"
               />
               <label htmlFor="auth-check" className="text-xs text-purple-900 cursor-pointer select-none leading-relaxed font-medium">
-                <strong>명시적 실행 동의: </strong>
-                Nile 테스트넷 상의 {actionMode === "SUPPLY" ? `${supplyAmount} TRX 예치` : `${redeemAmount} jTRX 인출/상환`} 트랜잭션 내용을 확인하였으며, 지갑 서명을 진행하는 데 동의합니다.
+                <strong>{isDemoMode ? "시뮬레이션 확인: " : "명시적 실행 동의: "}</strong>
+                {isDemoMode
+                  ? `SIMULATED ONLY: ${preview.amount} ${preview.asset}. No wallet request or chain action will occur.`
+                  : `I reviewed ${preview.amount} ${preview.asset}, network, contract, method, fee estimate, risks and scope. Request the TronLink signature.`}
               </label>
             </div>
           )}
@@ -566,8 +832,10 @@ export function ExecutionModal({
               className={`p-4 rounded-2xl text-xs flex items-start gap-3 ${
                 lifecycleState === "CONFIRMED"
                   ? "bg-emerald-50 border border-emerald-300 text-emerald-900"
-                  : lifecycleState === "FAILED" || lifecycleState === "REJECTED"
+                  : lifecycleState === "FAILED" || lifecycleState === "REJECTED" || lifecycleState === "STOPPED"
                   ? "bg-rose-50 border border-rose-200 text-rose-900"
+                  : lifecycleState === "SIMULATED"
+                  ? "bg-amber-50 border border-amber-200 text-amber-900"
                   : lifecycleState === "PREFLIGHT_FAILED"
                   ? "bg-slate-100 border border-slate-200 text-slate-700"
                   : "bg-blue-50 border border-blue-200 text-blue-900"
@@ -577,6 +845,8 @@ export function ExecutionModal({
                 <Loader2 className="w-4 h-4 animate-spin shrink-0 mt-0.5 text-blue-600" />
               ) : lifecycleState === "CONFIRMED" ? (
                 <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+              ) : lifecycleState === "SIMULATED" ? (
+                <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               ) : lifecycleState === "PREFLIGHT_FAILED" || isInsufficientFunds ? (
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               ) : (
@@ -615,13 +885,21 @@ export function ExecutionModal({
             {lifecycleState === "CONFIRMED" ? "닫기" : "취소"}
           </button>
 
-          {lifecycleState === "CONFIRMED" ? (
+          {lifecycleState === "PREFLIGHT_FAILED" && !isDemoMode ? (
+            <button
+              onClick={handleExecute}
+              className="bg-rose-700 hover:bg-rose-600 text-white font-bold text-xs px-5 py-3 rounded-xl flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>Record safety stop</span>
+            </button>
+          ) : lifecycleState === "CONFIRMED" || lifecycleState === "SIMULATED" ? (
             <button
               onClick={onClose}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-6 py-3 rounded-xl flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+              className={`${lifecycleState === "CONFIRMED" ? "bg-emerald-600 hover:bg-emerald-500" : "bg-amber-600 hover:bg-amber-500"} text-white font-bold text-xs px-6 py-3 rounded-xl flex items-center gap-2 shadow-xs transition-colors cursor-pointer`}
             >
-              <CheckCircle2 className="w-4 h-4" />
-              <span>확인 완료</span>
+              {lifecycleState === "CONFIRMED" ? <CheckCircle2 className="w-4 h-4" /> : <Info className="w-4 h-4" />}
+              <span>{lifecycleState === "CONFIRMED" ? "TronGrid confirmed" : "Close simulation"}</span>
             </button>
           ) : (
             <button
@@ -646,7 +924,7 @@ export function ExecutionModal({
               ) : (
                 <>
                   <Lock className="w-4 h-4" />
-                  <span>트랜잭션 승인 및 서명</span>
+                  <span>{isDemoMode ? "Record simulation" : "Request TronLink signature"}</span>
                 </>
               )}
             </button>

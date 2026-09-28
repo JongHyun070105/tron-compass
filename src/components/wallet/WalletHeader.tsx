@@ -47,7 +47,7 @@ export function WalletHeader({
               </span>
             </div>
             <p className="text-xs text-slate-500 font-medium">
-              AI 자산 배분 & 수익 계획
+              Evidence-backed yield decisions
             </p>
           </div>
         </div>
@@ -106,7 +106,7 @@ export function WalletHeader({
                   {walletState.address.slice(0, 5)}...{walletState.address.slice(-4)}
                 </span>
                 <span className="text-slate-900 font-bold font-mono pl-1 border-l border-slate-200">
-                  {walletState.trxBalance} TRX
+                  {walletState.trxBalance === "UNAVAILABLE" ? "TRX balance unavailable" : `${walletState.trxBalance} TRX`}
                 </span>
               </div>
 

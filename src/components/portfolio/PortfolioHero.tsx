@@ -6,10 +6,7 @@ import { NeedsProfile } from "@/domain/allocation/types";
 import {
   Sparkles,
   ArrowRight,
-  TrendingUp,
   ShieldCheck,
-  Coins,
-  ChevronRight,
 } from "lucide-react";
 
 interface PortfolioHeroProps {
@@ -60,19 +57,26 @@ export function PortfolioHero({
           {/* Primary Numbers */}
           <div>
             <span className="text-sm font-medium text-slate-500 block mb-1">
-              총 보유 자산
+              지갑 토큰 잔액
             </span>
             <div className="flex items-baseline gap-3 flex-wrap">
               <span className="text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900 font-mono">
-                {walletState.trxBalance} TRX
+                {walletState.trxBalance === "UNAVAILABLE" ? "UNAVAILABLE" : `${walletState.trxBalance} TRX`}
               </span>
               <span className="text-lg sm:text-xl font-semibold text-slate-400 font-mono">
-                + {walletState.usddBalance} USDD
+                {walletState.usddBalance === "UNAVAILABLE" ? "USDD UNAVAILABLE" : `+ ${walletState.usddBalance} USDD`}
               </span>
-              <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200">
-                추정 ~$1,500
-              </span>
+              {walletState.isDemoMode && (
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200">
+                  SIMULATED · demo balances
+                </span>
+              )}
             </div>
+            <p className="mt-2 text-xs text-slate-500">
+              {walletState.isDemoMode
+                ? "Demo balances and USD valuations are synthetic fixtures, not market quotes or chain observations."
+                : "TRX is read from the connected wallet. USDD and portfolio USD value are unavailable until token and price sources are connected."}
+            </p>
           </div>
 
           {/* Short Goal Summary */}
@@ -103,11 +107,11 @@ export function PortfolioHero({
 
           <div className="flex items-center justify-center gap-3 text-xs text-slate-400">
             <span className="flex items-center gap-1">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-              <span>원금 안전 우선</span>
+              <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />
+              <span>상환은 풀 유동성에 따름</span>
             </span>
             <span>•</span>
-            <span>수수료 없는 즉시 인출</span>
+            <span>네트워크 수수료 발생 가능</span>
           </div>
         </div>
       </div>

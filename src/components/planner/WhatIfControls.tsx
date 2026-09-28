@@ -13,11 +13,12 @@ import {
   DollarSign,
   Info,
 } from "lucide-react";
+import { getUsdValuationStatus, hasCompleteUsdValuation } from "@/domain/allocation/valuation";
 
 interface WhatIfControlsProps {
   profile: NeedsProfile;
   totalCapitalUsd?: string;
-  totalPortfolioUsd?: string;
+  totalPortfolioUsd?: string | null;
   activePlan?: AllocationPlan | null;
   onConstraintsChanged?: (updatedProfile: NeedsProfile) => void;
   onChange?: (updatedProfile: NeedsProfile) => void;
@@ -36,7 +37,10 @@ export function WhatIfControls({
     if (onConstraintsChanged) onConstraintsChanged(updated);
   };
 
-  const totalCapDisplay = totalPortfolioUsd || totalCapitalUsd || "1500.00";
+  const valuationAvailable = hasCompleteUsdValuation(profile);
+  const totalCapDisplay = valuationAvailable
+    ? totalPortfolioUsd || totalCapitalUsd || "UNAVAILABLE"
+    : "UNAVAILABLE";
   const currentLiquid = parseInt(profile.minimumLiquidUsd || "300", 10);
   const currentHorizon = profile.horizonDays || 90;
   const currentRisk = profile.riskLevel || "LOW";
@@ -79,15 +83,20 @@ export function WhatIfControls({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
-                실시간 What-If 제약조건 시뮬레이션
+                What-if · local simulation
               </h3>
               <span className="text-[11px] bg-emerald-50 text-emerald-800 border border-emerald-200 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1">
                 <Zap className="w-3 h-3 text-emerald-600 fill-emerald-600" />
-                <span>결정론적 즉시 재계산 (0ms)</span>
+                <span>즉시 로컬 재계산</span>
               </span>
+              {getUsdValuationStatus(profile) === "SIMULATED" && (
+                <span className="text-[11px] bg-amber-50 text-amber-800 border border-amber-200 px-2.5 py-0.5 rounded-full font-bold">
+                  SIMULATED inputs
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              슬라이더를 움직여 비상금이나 위험 선호를 조절하면, Gemini API 호출 없이 수학 배분 엔진이 즉시 새 플랜을 산출합니다.
+              Change liquidity, horizon or risk and recalculate locally. No Gemini call is made, and confirmed My Rules do not change.
             </p>
           </div>
         </div>
@@ -95,7 +104,7 @@ export function WhatIfControls({
         <div className="text-right text-xs">
           <span className="text-slate-400 block text-[11px]">운용 대상 총 자본</span>
           <span className="font-mono font-bold text-slate-900 text-sm">
-            ${totalCapitalUsd} USD
+            {valuationAvailable ? `$${totalCapDisplay} USD` : "UNAVAILABLE · USD valuation evidence missing"}
           </span>
         </div>
       </div>
@@ -228,14 +237,18 @@ export function WhatIfControls({
             </div>
             <div>
               <span className="text-[11px] text-slate-300 block">
-                {activePlan.label} 실시간 반영 결과
+                {activePlan.label} · local simulation result
               </span>
               <div className="flex items-center gap-3 mt-0.5">
                 <span className="text-lg font-extrabold font-mono text-emerald-400">
-                  {activePlan.effectiveNetApy}
+                  {activePlan.usdValuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : activePlan.effectiveNetApy ?? "UNAVAILABLE · incentive APY"}
                 </span>
                 <span className="text-xs text-slate-300 font-mono">
-                  {activePlan.horizonDays}일 예상 순수익: +${activePlan.expectedNetYieldUsd}
+                  {activePlan.usdValuationStatus === "UNAVAILABLE"
+                    ? "USD-based return calculation is unavailable."
+                    : activePlan.expectedNetYieldUsd === null
+                      ? "Net return unavailable because incentive APY is unknown."
+                      : `${activePlan.horizonDays}일 예상 순수익: +$${activePlan.expectedNetYieldUsd}`}
                 </span>
               </div>
             </div>
@@ -245,14 +258,14 @@ export function WhatIfControls({
             <div className="bg-white/10 px-3 py-1.5 rounded-xl border border-white/10">
               <span className="text-slate-400 text-[10px] block">상시 비상금</span>
               <span className="text-emerald-400 font-bold">
-                ${activePlan.liquidReserveUsd} ({activePlan.liquidReservePct})
+                {activePlan.usdValuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : `$${activePlan.liquidReserveUsd} (${activePlan.liquidReservePct})`}
               </span>
             </div>
 
             <div className="bg-white/10 px-3 py-1.5 rounded-xl border border-white/10">
               <span className="text-slate-400 text-[10px] block">제약 통과율</span>
               <span className="text-blue-300 font-bold">
-                100% PASS ({activePlan.constraintChecks.length}/{activePlan.constraintChecks.length})
+                {activePlan.constraintChecks.filter((item) => item.passed).length}/{activePlan.constraintChecks.length} PASS
               </span>
             </div>
           </div>

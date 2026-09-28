@@ -1,6 +1,22 @@
 import { LLMProvider, MockLLMProvider } from "./mock-provider";
 import { ExtractedProfileSchema, PlanExplanationSchema, PlanExplanation } from "./schemas";
 import { NeedsProfile, AllocationPlan } from "@/domain/allocation/types";
+import { extractGroundedHoldings } from "./grounding";
+
+function numericClaims(text: string): string[] {
+  return [...text.matchAll(/(?:^|[^\p{L}])\$?\s*(\d[\d,]*(?:\.\d+)?)(?:\s*%|\s*(?:USD|TRX|USDD|USDT|일))?/giu)]
+    .map((match) => match[1].replace(/,/g, ""));
+}
+
+function hasOnlyGroundedNumbers(explanation: PlanExplanation, source: unknown): boolean {
+  const sourceText = JSON.stringify(source);
+  const allowed = new Set(numericClaims(sourceText).map((value) => Number(value)));
+  for (const value of [...allowed]) {
+    if (value > 0 && value < 1) allowed.add(value * 100);
+  }
+  const outputText = Object.values(explanation).flat().join(" ");
+  return numericClaims(outputText).every((value) => allowed.has(Number(value)));
+}
 
 export class GeminiLLMProvider implements LLMProvider {
   private apiKey: string;
@@ -32,7 +48,7 @@ export class GeminiLLMProvider implements LLMProvider {
 Your job is to analyze the user's natural language investment goals and extract structured financial constraints.
 You MUST output valid JSON matching this schema:
 {
-  "holdings": [{"asset": string, "amount": string, "estimatedUsd"?: string}],
+  "holdings": [{"asset": string, "amount": string}],
   "horizonDays": number (investment horizon in days, default to 90 if unspecified),
   "minimumLiquidUsd": string (liquid reserve required in USD, default to "300" if unspecified),
   "riskLevel": "LOW" | "MEDIUM" | "HIGH",
@@ -48,7 +64,7 @@ You MUST output valid JSON matching this schema:
 
 Available assets in TRON ecosystem: USDD, USDT, TRX, sTRX, JST, SUN, BTT.
 User wallet holdings (if connected): ${JSON.stringify(input.walletHoldings || [])}.
-Do NOT hallucinate APYs or contract addresses.
+Only extract asset quantities explicitly present in the user's words or supplied wallet balances. Never estimate USD values, balances, APY, fees, allocation math, contract addresses, or transaction data. Leave missing fields empty and ask a follow-up question. Do NOT hallucinate APYs or contract addresses.
 Respond ONLY with the JSON object.`;
 
     const userMessage = `User Input: "${input.userInput}"`;
@@ -89,12 +105,14 @@ Respond ONLY with the JSON object.`;
       if (!rawText) throw new Error("Empty candidate from Gemini");
 
       const parsed = ExtractedProfileSchema.parse(JSON.parse(rawText));
+      const holdings = extractGroundedHoldings(input.userInput, input.walletHoldings);
+      const missingFields = [...parsed.missingFields];
+      if (!holdings.length && !missingFields.includes("보유 자산 수량")) {
+        missingFields.push("보유 자산 수량");
+      }
 
       const profile: NeedsProfile = {
-        holdings:
-          parsed.holdings.length > 0
-            ? parsed.holdings
-            : [{ asset: "USDD", amount: "1000", estimatedUsd: "1000" }],
+        holdings,
         horizonDays: parsed.horizonDays ?? 90,
         minimumLiquidUsd: parsed.minimumLiquidUsd ?? "300",
         riskLevel: parsed.riskLevel ?? "LOW",
@@ -103,21 +121,21 @@ Respond ONLY with the JSON object.`;
         allowedAssets: parsed.allowedAssets,
         excludedAssets: parsed.excludedAssets,
         protectionClause: parsed.protectionClause,
-        missingFields: parsed.missingFields,
+        missingFields,
         assumptions: [
           `투자 기간 ${parsed.horizonDays ?? 90}일 기준 복리 수익 추정`,
           `최소 유동성 $${parsed.minimumLiquidUsd ?? "300"} 상시 확보`,
         ],
       };
 
-      const needsClarification = parsed.missingFields.length > 0;
+      const needsClarification = missingFields.length > 0;
 
       console.log("[Gemini Provider] Live Gemini 2.5 Flash response received for extractNeeds");
 
       return {
         profile,
         needsClarification,
-        followUpQuestion: parsed.followUpQuestion,
+        followUpQuestion: parsed.followUpQuestion || (!holdings.length ? "보유하신 자산과 수량을 알려주세요. 예: 1,000 USDD 또는 2,000 TRX." : undefined),
         summary:
           parsed.summary ||
           `총 ${profile.holdings.map((h) => `${h.amount} ${h.asset}`).join(", ")} 자산을 기반으로 ${profile.horizonDays}일 동안 운용하는 ${profile.riskLevel} 위험 수준의 플랜을 구성했습니다.`,
@@ -135,7 +153,7 @@ Respond ONLY with the JSON object.`;
     profile: NeedsProfile;
     plans: AllocationPlan[];
   }): Promise<PlanExplanation & { provider: "gemini" | "mock_fallback" }> {
-    if (!this.apiKey) {
+    if (!this.apiKey || input.plans.some((plan) => plan.usdValuationStatus === "UNAVAILABLE")) {
       return this.fallback.explainPlans(input);
     }
 
@@ -144,6 +162,10 @@ Respond ONLY with the JSON object.`;
       label: p.label,
       strategyType: p.strategyType,
       effectiveNetApy: p.effectiveNetApy,
+      usdValuationStatus: p.usdValuationStatus,
+      expectedBaseYieldUsd: p.expectedBaseYieldUsd,
+      expectedIncentiveYieldUsd: p.expectedIncentiveYieldUsd,
+      estimatedTotalCostUsd: p.estimatedTotalCostUsd,
       liquidReserveUsd: p.liquidReserveUsd,
       liquidReservePct: p.liquidReservePct,
       expectedNetYieldUsd: p.expectedNetYieldUsd,
@@ -152,9 +174,10 @@ Respond ONLY with the JSON object.`;
       ),
     }));
 
-    const prompt = `You are the Financial Explanation Engine for TRON Compass (GWDC 2026 TRON Challenge B).
+const prompt = `You are the explanation engine for TRON Compass (GWDC 2026 TRON Challenge B).
 Explain the following two deterministic plans to the user in concise, polite Korean.
-Instead of giant paragraphs, you MUST provide concise, high-impact bullet summaries for each plan (3-4 bullets each), plus a concise recommendation summary.
+Provide concise bullet summaries for each plan and a short comparison. The structured plans, evidence, and rules are authoritative.
+Do not invent or reformat any financial number. Use a number only when the exact value or its percent conversion is present in the structured inputs. If valuation is unavailable, say so and do not supply dollar returns or exposure percentages. Do not claim principal safety, guaranteed yield, immediate withdrawal, or fee-free transactions.
 
 Profile: ${JSON.stringify(input.profile)}
 Plans: ${JSON.stringify(simplifiedPlans)}
@@ -162,16 +185,12 @@ Plans: ${JSON.stringify(simplifiedPlans)}
 Output valid JSON matching this schema:
 {
   "planAHighlights": [
-    "상시 유동성 $750 즉시 인출 보존 (50%)",
-    "변동성 자산(TRX) 노출을 3.3%로 최소화",
-    "락업 없는 JustLend 코어 풀 공급으로 원금 손실 차단",
-    "보수적 리스크 성향에 맞춘 안정적 자본 배분"
+    "Summarize recorded checks and evidence",
+    "Use only values present in the structured inputs"
   ],
   "planBHighlights": [
-    "필수 유동성 $300 확보 후 자본 가동률 극대화",
-    "변동성 노출을 13.3% 이내로 엄격히 제어",
-    "JustLend & USDD 인센티브 마이닝 복합 배분",
-    "약정 기간 동안 복리 순수익 극대화 추구"
+    "Summarize recorded checks and evidence",
+    "State when a value is unavailable"
   ],
   "recommendationSummary": "1-2 sentence recommendation in polite Korean",
   "planAExplanation": "detailed explanation for Plan A in Korean (for detailed drawer view)",
@@ -208,6 +227,10 @@ Respond ONLY with the JSON object.`;
       if (!text) throw new Error("Empty candidate in Gemini explain");
 
       const parsed = PlanExplanationSchema.parse(JSON.parse(text));
+      if (!hasOnlyGroundedNumbers(parsed, { profile: input.profile, plans: simplifiedPlans })) {
+        console.warn("[Gemini Provider] Unsupported numeric claim; using locally grounded explanation");
+        return this.fallback.explainPlans(input);
+      }
       console.log("[Gemini Provider] Live Gemini 2.5 Flash response received for explainPlans");
 
       return {

@@ -1,9 +1,14 @@
-import { RawJustLendResponseSchema, RawJustLendToken } from "./schemas";
+import {
+  RawJustLendMiningApyResponseSchema,
+  RawJustLendResponseSchema,
+  RawJustLendToken,
+} from "./schemas";
 import { normalizeJustLendMarketList } from "./normalize";
 import { YieldOpportunity } from "@/domain/allocation/types";
 import { JUSTLEND_FALLBACK_FIXTURE } from "./fixture";
 
 const JUSTLEND_API_URL = "https://openapi.just.network/lend/jtoken";
+const JUSTLEND_MINING_APY_URL = "https://openapi.just.network/mining/apy";
 const CACHE_TTL_MS = 30 * 1000; // 30 seconds cache
 
 interface CacheEntry {
@@ -19,7 +24,7 @@ export async function fetchJustLendMarkets(options?: {
 }): Promise<{
   markets: YieldOpportunity[];
   source: "live" | "cache" | "fallback";
-  fetchedAt: string;
+  fetchedAt: string | null;
 }> {
   const now = Date.now();
 
@@ -55,8 +60,46 @@ export async function fetchJustLendMarkets(options?: {
 
     const json = await res.json();
     const parsed = RawJustLendResponseSchema.parse(json);
+    if (parsed.code !== 0) {
+      throw new Error(`JustLend market API error: ${parsed.message}`);
+    }
     const fetchedAt = new Date().toISOString();
-    const normalized = normalizeJustLendMarketList(parsed.data.tokenList, fetchedAt);
+
+    let miningApy: ReturnType<typeof RawJustLendMiningApyResponseSchema.parse>["data"] | null = null;
+    let miningFetchedAt: string | null = null;
+    const miningController = new AbortController();
+    const miningTimeoutId = setTimeout(() => miningController.abort(), 6000);
+    try {
+      const miningResponse = await fetch(JUSTLEND_MINING_APY_URL, {
+        signal: miningController.signal,
+        headers: { Accept: "application/json" },
+        next: { revalidate: 30 },
+      });
+      if (!miningResponse.ok) {
+        throw new Error(`JustLend mining API returned HTTP ${miningResponse.status}`);
+      }
+      const parsedMining = RawJustLendMiningApyResponseSchema.parse(await miningResponse.json());
+      if (parsedMining.code !== 0) {
+        throw new Error(`JustLend mining API error: ${parsedMining.message}`);
+      }
+      miningApy = parsedMining.data;
+      miningFetchedAt = new Date().toISOString();
+    } catch (miningError: unknown) {
+      console.warn(
+        "JustLend mining APY unavailable; keeping incentive yield unknown:",
+        miningError instanceof Error ? miningError.message : String(miningError)
+      );
+    } finally {
+      clearTimeout(miningTimeoutId);
+    }
+
+    const normalized = normalizeJustLendMarketList(
+      parsed.data.tokenList,
+      fetchedAt,
+      "LIVE_MAINNET",
+      miningApy,
+      miningFetchedAt
+    );
 
     memoryCache = {
       data: normalized,
@@ -76,16 +119,16 @@ export async function fetchJustLendMarkets(options?: {
       err instanceof Error ? err.message : String(err)
     );
 
-    const fallbackFetchedAt = new Date().toISOString();
     const fallbackMarkets = normalizeJustLendMarketList(
       JUSTLEND_FALLBACK_FIXTURE.data.tokenList as RawJustLendToken[],
-      fallbackFetchedAt
+      null,
+      "SNAPSHOT"
     );
 
     return {
       markets: fallbackMarkets,
       source: "fallback",
-      fetchedAt: fallbackFetchedAt,
+      fetchedAt: null,
     };
   }
 }

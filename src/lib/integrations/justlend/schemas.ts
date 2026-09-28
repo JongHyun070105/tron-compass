@@ -23,5 +23,17 @@ export const RawJustLendResponseSchema = z.object({
   }),
 });
 
+export const RawJustLendMiningApyResponseSchema = z.object({
+  code: z.number(),
+  message: z.string(),
+  data: z.record(
+    z.string(),
+    z.object({
+      USDD: z.string().regex(/^\d+(?:\.\d+)?$/),
+    })
+  ),
+});
+
 export type RawJustLendToken = z.infer<typeof RawJustLendTokenSchema>;
 export type RawJustLendResponse = z.infer<typeof RawJustLendResponseSchema>;
+export type RawJustLendMiningApyResponse = z.infer<typeof RawJustLendMiningApyResponseSchema>;

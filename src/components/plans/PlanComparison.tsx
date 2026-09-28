@@ -15,7 +15,6 @@ import {
   ChevronUp,
   Shield,
   Layers,
-  Info,
   Check,
   Zap,
 } from "lucide-react";
@@ -67,13 +66,13 @@ export function PlanComparison({
             <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
               맞춤 운용 플랜 비교
             </h2>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold flex items-center gap-1">
+            <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 font-semibold flex items-center gap-1">
               <ShieldCheck className="w-3.5 h-3.5" />
-              <span>하드 제약 100% 통과</span>
+              <span>규칙은 플랜별로 확인</span>
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            원금 안전과 목표 유동성을 보장하는 2가지 결정론적 최적화 플랜입니다.
+            Each option shows its evidence and rule checks. Returns, principal, and withdrawal timing are not guaranteed.
           </p>
         </div>
 
@@ -82,7 +81,7 @@ export function PlanComparison({
           {aiExplanation ? (
             <span className="bg-red-50 text-red-700 border border-red-200/80 px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 shadow-2xs">
               <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-              <span>Gemini 2.5 Flash 분석 완료</span>
+              <span>{isGeminiLive ? "Gemini explanation" : "Locally grounded explanation"}</span>
             </span>
           ) : onRequestAiExplanation ? (
             <button
@@ -107,8 +106,8 @@ export function PlanComparison({
 
           const planFriendlyName = isLiquidityFirst ? "안정형 (Safe)" : "수익형 (Balanced)";
           const planOneLineSummary = isLiquidityFirst
-            ? "원금 보존과 즉시 출금 가능한 유동성을 최우선으로 확보합니다."
-            : "최소 비상금을 유지하면서 JustLend 인센티브로 수익을 극대화합니다.";
+            ? "Recorded evidence and reserve rules shape this option."
+            : "Recorded evidence and exposure limits shape this option.";
 
           // Deterministic reasons generated directly by engine
           const reasons =
@@ -118,11 +117,11 @@ export function PlanComparison({
               ? [
                   "언제든 출금할 수 있는 상시 비상금을 넉넉히 확보합니다",
                   "가격 변동이 있는 자산(TRX) 노출을 최소화합니다",
-                  "락업 없는 코어 풀을 활용해 원금 손실을 철저히 방어합니다",
+                  "코어 풀과 그에 따른 프로토콜·유동성 위험을 함께 검토합니다",
                 ]
               : [
                   "최소 비상금 조건을 충실히 지키며 자본 가동률을 극대화합니다",
-                  "JustLend 및 USDD 인센티브 마이닝 복합 배분으로 높은 수익 추구",
+                  "기본 수익률과 출처가 있는 인센티브를 분리해 비교합니다",
                   "변동성 자산(TRX) 노출을 한도 내에서 철저히 통제합니다",
                 ];
 
@@ -169,6 +168,11 @@ export function PlanComparison({
                   <p className="text-xs text-slate-500 leading-relaxed">
                     {planOneLineSummary}
                   </p>
+                  {plan.usdValuationStatus && plan.usdValuationStatus !== "SOURCE_BACKED" && (
+                    <span className={`inline-flex text-[10px] font-bold px-2 py-1 rounded-md border ${plan.usdValuationStatus === "SIMULATED" ? "bg-amber-50 text-amber-800 border-amber-200" : plan.usdValuationStatus === "SNAPSHOT" ? "bg-blue-50 text-blue-800 border-blue-200" : "bg-slate-100 text-slate-700 border-slate-200"}`}>
+                      {plan.usdValuationStatus === "SIMULATED" ? "SIMULATED · demo valuation" : plan.usdValuationStatus === "SNAPSHOT" ? "SNAPSHOT valuation" : "USD valuation UNAVAILABLE"}
+                    </span>
+                  )}
                 </div>
 
                 {/* 2. Primary Number: Expected APY */}
@@ -178,7 +182,7 @@ export function PlanComparison({
                       예상 연 수익률 (순 APY)
                     </span>
                     <div className="text-3xl sm:text-4xl font-extrabold text-emerald-600 font-mono tracking-tight">
-                      {plan.effectiveNetApy}
+                      {plan.usdValuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : plan.effectiveNetApy ?? "UNAVAILABLE · incentive APY"}
                     </div>
                   </div>
 
@@ -187,7 +191,7 @@ export function PlanComparison({
                       {plan.horizonDays}일 예상 순수익
                     </span>
                     <span className="text-lg sm:text-xl font-bold text-slate-800 font-mono">
-                      +${plan.expectedNetYieldUsd}
+                      {plan.usdValuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : plan.expectedNetYieldUsd === null ? "UNAVAILABLE · incentive APY" : `+$${plan.expectedNetYieldUsd}`}
                     </span>
                   </div>
                 </div>
@@ -197,9 +201,9 @@ export function PlanComparison({
                   <div className="bg-slate-50 border border-slate-200/70 rounded-xl p-2.5">
                     <span className="text-slate-400 block text-[11px]">상시 비상금</span>
                     <strong className="text-emerald-700 font-mono text-sm block mt-0.5">
-                      ${plan.liquidReserveUsd}
+                      {plan.usdValuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : `$${plan.liquidReserveUsd}`}
                     </strong>
-                    <span className="text-[10px] text-slate-400">즉시 인출</span>
+                    <span className="text-[10px] text-slate-400">미배분 잔액 · 수수료 발생 가능</span>
                   </div>
 
                   <div className="bg-slate-50 border border-slate-200/70 rounded-xl p-2.5">
@@ -208,7 +212,7 @@ export function PlanComparison({
                       {isLiquidityFirst ? "낮음" : "보통"}
                     </strong>
                     <span className="text-[10px] text-slate-400">
-                      {isLiquidityFirst ? "원금 보호" : "균형 수익"}
+                      {isLiquidityFirst ? "낮은 편성 위험도" : "중간 편성 위험도"}
                     </span>
                   </div>
 
@@ -246,7 +250,13 @@ export function PlanComparison({
                     포트폴리오 배분 내역
                   </span>
                   <div className="space-y-2">
-                    {plan.allocations.map((leg, lIdx) => (
+                    {plan.allocations.length === 0 ? (
+                      <p className="text-xs text-slate-500 rounded-xl bg-slate-50 border border-slate-200 p-3">
+                        {plan.usdValuationStatus === "UNAVAILABLE"
+                          ? "A sourced USD value is missing for one or more holdings. Exposure and reserve rules are UNKNOWN, so no allocation is proposed."
+                          : "No allocation is supported by the current recorded evidence and rules."}
+                      </p>
+                    ) : plan.allocations.map((leg, lIdx) => (
                       <div
                         key={lIdx}
                         className="p-3 rounded-xl bg-slate-50 border border-slate-200/70 flex items-center justify-between text-xs"
@@ -266,9 +276,17 @@ export function PlanComparison({
                         </div>
 
                         <div className="text-right">
-                          <span className="text-emerald-600 font-mono font-bold block text-sm">
-                            {toPercentString(leg.totalApy)}
+                          <span className="text-slate-700 font-mono font-semibold block text-[11px]">
+                            Base {toPercentString(leg.baseApy)}
                           </span>
+                          <span className="text-amber-700 font-mono font-semibold block text-[11px]">
+                            USDD incentive {leg.incentiveApy === null ? "Unavailable" : toPercentString(leg.incentiveApy)}
+                          </span>
+                          {leg.totalApy !== null && (
+                            <span className="text-emerald-700 font-mono font-bold block text-xs">
+                              Total (base + USDD incentive) {toPercentString(leg.totalApy)}
+                            </span>
+                          )}
                           {leg.executabilityClass === "NILE_EXECUTABLE" ? (
                             <span className="text-[10px] text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded font-bold">
                               Nile 직접 실행 가능
@@ -295,7 +313,7 @@ export function PlanComparison({
                   >
                     <span className="flex items-center gap-1.5 font-medium">
                       <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>세부 제약조건 검증 ({plan.constraintChecks.length}개 항목 통과)</span>
+                      <span>세부 제약조건 검증 ({plan.constraintChecks.filter((check) => check.passed).length}/{plan.constraintChecks.length} PASS)</span>
                     </span>
                     {isDiagnosticsOpen ? (
                       <ChevronUp className="w-4 h-4" />
@@ -312,7 +330,7 @@ export function PlanComparison({
                           className="flex items-center justify-between text-[11px] py-1 border-b border-slate-200/60 last:border-b-0"
                         >
                           <span className="flex items-center gap-1.5 text-slate-700 font-medium">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                            <CheckCircle2 className={`w-3.5 h-3.5 shrink-0 ${check.passed ? "text-emerald-600" : "text-rose-600"}`} />
                             {check.name}
                           </span>
                           <span className="text-slate-500 font-mono">{check.actual}</span>
@@ -325,7 +343,7 @@ export function PlanComparison({
 
               {/* 7. Action Button: Select CTA */}
               <div className="pt-6 mt-6 border-t border-slate-100 space-y-2">
-                {plan.allocations.some((a) => a.executable) ? (
+                {plan.allocations.some((a) => a.executable) && plan.constraintChecks.every((check) => check.passed) ? (
                   <div className="space-y-2">
                     <button
                       onClick={(e) => {
@@ -356,8 +374,10 @@ export function PlanComparison({
                     </button>
                   </div>
                 ) : (
-                  <div className="text-center text-xs text-slate-400 py-2">
-                    조회 전용 플랜 (Nile 모의 실행은 jTRX 선택 시 가능)
+                  <div className="text-center text-xs text-slate-500 py-2">
+                    {plan.usdValuationStatus === "UNAVAILABLE"
+                      ? "A sourced valuation and passing My Rules checks are required before an execution option can appear."
+                      : "No allocation currently passes all recorded checks and execution requirements."}
                   </div>
                 )}
               </div>

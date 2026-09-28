@@ -4,40 +4,15 @@ import {
   AllocationPlan,
   AllocationLeg,
 } from "./types";
-import { evaluateHardConstraints } from "./constraints";
+import { evaluateDecisionRules } from "./rules";
 import { decomposeLegYield } from "@/lib/math/yield";
 import { Decimal, SafeMath, toDecimal, toPercentString } from "@/lib/math/decimal";
 import { evaluateUsddDecisionSignal, UsddDecisionSignal } from "./usdd-signals";
 import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
-
-const ASSET_PRICE_USD: Record<string, string> = {
-  USDD: "1.00",
-  USDT: "1.00",
-  USD1: "1.00",
-  TUSD: "1.00",
-  TRX: "0.25", // Reasonable benchmark rate; updated via oracle in live mode
-  sTRX: "0.26",
-  SUN: "0.02",
-  JST: "0.03",
-  BTT: "0.000001",
-};
-
-export function getAssetPriceUsd(asset: string): string {
-  return ASSET_PRICE_USD[asset.toUpperCase()] || "1.00";
-}
+import { getHoldingUsdPerUnit, getHoldingUsdValue, getPortfolioUsdValue, getUsdValuationStatus } from "./valuation";
 
 export function computeTotalCapitalUsd(profile: NeedsProfile): string {
-  let total = toDecimal(0);
-  for (const h of profile.holdings) {
-    if (h.estimatedUsd && parseFloat(h.estimatedUsd) > 0) {
-      total = total.plus(toDecimal(h.estimatedUsd));
-    } else {
-      const price = getAssetPriceUsd(h.asset);
-      const val = SafeMath.mul(h.amount, price);
-      total = total.plus(val);
-    }
-  }
-  return total.toFixed(2);
+  return getPortfolioUsdValue(profile) ?? "0.00";
 }
 
 export function generateAllocationPlans(
@@ -62,7 +37,7 @@ export function generateAllocationPlans(
   const activeOpps = opportunities
     .filter(
       (o) =>
-        toDecimal(o.totalApy).gte(0) &&
+        toDecimal(o.totalApy ?? o.baseApy).gte(0) &&
         !(profile.excludedAssets || []).includes(o.asset)
     )
     .map((o) => {
@@ -103,8 +78,10 @@ export function generateAllocationPlans(
       continue;
     }
 
-    const price = toDecimal(getAssetPriceUsd(h.asset));
-    const holdingVal = toDecimal(h.amount).times(price);
+    const price = getHoldingUsdPerUnit(h);
+    const holdingUsdValue = getHoldingUsdValue(h);
+    if (!price || price.lte(0) || holdingUsdValue === null) continue;
+    const holdingVal = toDecimal(holdingUsdValue);
 
     // Find best opportunity for this asset
     const opp = activeOpps.find((o) => o.asset === h.asset && o.priceRiskClass === "LOW") ||
@@ -187,8 +164,10 @@ export function generateAllocationPlans(
       continue;
     }
 
-    const price = toDecimal(getAssetPriceUsd(h.asset));
-    const holdingVal = toDecimal(h.amount).times(price);
+    const price = getHoldingUsdPerUnit(h);
+    const holdingUsdValue = getHoldingUsdValue(h);
+    if (!price || price.lte(0) || holdingUsdValue === null) continue;
+    const holdingVal = toDecimal(holdingUsdValue);
 
     // Find matching opportunity
     const opp = activeOpps.find((o) => o.asset === h.asset);
@@ -262,15 +241,25 @@ export function generateAllocationPlans(
     let totalIncentiveYield = toDecimal(0);
     let totalCosts = toDecimal(0);
     let totalNetYield = toDecimal(0);
+    let incentiveYieldAvailable = true;
+    let netYieldAvailable = true;
 
     for (const leg of allocations) {
       totalAlloc = totalAlloc.plus(toDecimal(leg.usdValue));
       totalBaseYield = totalBaseYield.plus(toDecimal(leg.baseYieldEstimateUsd));
-      totalIncentiveYield = totalIncentiveYield.plus(
-        toDecimal(leg.incentiveYieldEstimateUsd)
-      );
+      if (leg.incentiveYieldEstimateUsd === null) {
+        incentiveYieldAvailable = false;
+      } else {
+        totalIncentiveYield = totalIncentiveYield.plus(
+          toDecimal(leg.incentiveYieldEstimateUsd)
+        );
+      }
       totalCosts = totalCosts.plus(toDecimal(leg.estimatedCostUsd));
-      totalNetYield = totalNetYield.plus(toDecimal(leg.netYieldEstimateUsd));
+      if (leg.netYieldEstimateUsd === null) {
+        netYieldAvailable = false;
+      } else {
+        totalNetYield = totalNetYield.plus(toDecimal(leg.netYieldEstimateUsd));
+      }
     }
 
     const liquidReserve = totalCap.minus(totalAlloc);
@@ -278,33 +267,39 @@ export function generateAllocationPlans(
       ? liquidReserve.div(totalCap).toFixed(4)
       : "1.0000";
 
-    const constraintEval = evaluateHardConstraints(
+    const constraintEval = evaluateDecisionRules(
       profile,
       totalCapitalUsd,
       allocations,
       opportunities
     );
 
-    const netApy = totalAlloc.gt(0)
+    const netApy = netYieldAvailable && totalAlloc.gt(0)
       ? totalNetYield
           .div(totalAlloc)
           .times(new Decimal(365).div(horizonDays))
           .toFixed(4)
-      : "0.0000";
+      : totalAlloc.eq(0) ? "0.0000" : null;
 
     // Build concise, deterministic reasons
     const deterministicReasons: string[] = [
       allocations.length === 0
-        ? "사용자 요청으로 전체 자본을 100% 무위험 상시 비상금으로 보존합니다."
-        : `요청하신 $${minLiquid.toFixed(0)} 이상의 비상금($${liquidReserve.toFixed(0)})을 상시 인출 가능하게 100% 보존합니다`,
+        ? getUsdValuationStatus(profile) === "UNAVAILABLE"
+          ? "USD valuation evidence is unavailable; no allocation was generated."
+          : "No allocation was generated because available evidence and confirmed rules did not support one."
+        : `Estimated unallocated reserve is $${liquidReserve.toFixed(2)}; withdrawal availability depends on wallet balance, pool liquidity, and transaction resources.`,
       profile.protectionClause
         ? `보호 조건 준수: ${profile.protectionClause}`
-        : `변동성 자산(TRX) 노출을 최대 허용치(${(parseFloat(profile.maxVolatileExposurePct || "0.20") * 100).toFixed(0)}%) 이내로 엄격히 제한했습니다`,
-      "모든 편입 포지션의 락업 기간이 0일로 시장 유동성에 따라 상시 회수 가능합니다",
+        : `The confirmed maximum volatile exposure is ${(parseFloat(profile.maxVolatileExposurePct || "0.20") * 100).toFixed(0)}%.`,
+      "Exit timing depends on pool liquidity and transaction resources; immediate or fee-free withdrawal is not guaranteed.",
       usddSignal.reason,
       strategyType === "LIQUIDITY_FIRST"
-        ? "원금 방어와 즉각적 유동성을 최우선으로 하여 저위험 렌딩 풀에 안전하게 배분했습니다"
-        : "안전 마진을 유지한 상태에서 JustLend 인센티브 마이닝을 복합 배분하여 복리 수익을 극대화합니다",
+        ? "This option prioritizes reserve size among the opportunities and evidence recorded here."
+        : !incentiveYieldAvailable
+          ? "This option uses observed base rates; unavailable incentives remain unknown and are excluded from net return."
+          : allocations.some((leg) => leg.incentiveApy !== null && toDecimal(leg.incentiveApy).gt(0))
+            ? "This option separately includes observed base yield and source-backed USDD mining rewards."
+            : "No active USDD mining reward was observed for these allocations; return estimates use base yield.",
     ];
 
     const adjustedRiskScore = Math.max(1, Math.min(100, baseRiskScore - usddSignal.scoreBonus));
@@ -317,34 +312,39 @@ export function generateAllocationPlans(
       createdAt: timestamp,
       horizonDays,
       totalCapitalUsd,
+      usdValuationStatus: getUsdValuationStatus(profile),
       liquidReserveUsd: liquidReserve.toFixed(2),
       liquidReservePct: toPercentString(liquidReservePct),
       allocations,
       expectedBaseYieldUsd: totalBaseYield.toFixed(2),
-      expectedIncentiveYieldUsd: totalIncentiveYield.toFixed(2),
+      expectedIncentiveYieldUsd: incentiveYieldAvailable ? totalIncentiveYield.toFixed(2) : null,
       estimatedTotalCostUsd: totalCosts.toFixed(2),
-      expectedNetYieldUsd: totalNetYield.toFixed(2),
-      effectiveNetApy: toPercentString(netApy),
+      expectedNetYieldUsd: netYieldAvailable ? totalNetYield.toFixed(2) : null,
+      effectiveNetApy: netApy === null ? null : toPercentString(netApy),
       liquidityScore: baseLiquidityScore,
       riskScore: adjustedRiskScore,
       risks:
         strategyType === "LIQUIDITY_FIRST"
           ? [
-              "Low smart-contract counterparty risk with JustLend DAO core lending pool",
-              "Minimal volatility exposure with strong buffer above required liquidity reserve",
+              "Protocol and asset risks remain; estimated returns do not guarantee principal or liquidity.",
+              "The allocation is limited by the confirmed reserve and exposure rules.",
             ]
           : [
-              "Variable mining incentive APY is subject to JustLend DAO emission schedule",
-              "Moderate smart contract interaction with lending protocol and testnet execution sandbox",
+              !incentiveYieldAvailable
+                ? "Incentive rewards are unknown because the separate mining feed is unavailable; net returns cannot be computed."
+                : "Source-backed base and incentive rates may change during the holding period.",
+              "Any protocol interaction carries smart-contract, liquidity, and transaction-resource risks.",
             ],
       exitConditions: [
-        "Unallocated liquid reserve is accessible instantly in wallet without gas cost",
-        "JustLend positions can be redeemed on-demand subject to market liquidity and transaction energy",
+        "Unallocated assets remain in the wallet; transaction fees may apply to moving them.",
+        "JustLend redemption timing depends on market liquidity and transaction resources.",
       ],
       assumptions: [
         `Investment horizon is ${horizonDays} days`,
-        "Base lending APY compounds continuously with block-level utilization",
-        "Ecosystem mining rewards remain active during estimated holding period",
+        "Yield uses annual APY compounding over the recorded horizon; the protocol rate may change during that period.",
+        incentiveYieldAvailable
+          ? "Any source-backed incentive rate may change during the recorded horizon"
+          : "Incentive APY is unavailable and is not included in the net return calculation",
       ],
       deterministicReasons,
       sourceSnapshotIds: opportunities.map((o) => o.id),
@@ -356,7 +356,7 @@ export function generateAllocationPlans(
     "plan-liquidity-first",
     "Plan A: Liquidity-First",
     "LIQUIDITY_FIRST",
-    "Prioritizes high liquid cash buffer, minimal volatile exposure, and instant exit flexibility while earning steady base protocol yield.",
+    "Prioritizes a larger unallocated reserve and lower volatile exposure within the available evidence and rules.",
     planAAllocations,
     92,
     18
@@ -366,7 +366,7 @@ export function generateAllocationPlans(
     "plan-yield-oriented",
     "Plan B: Yield-Oriented",
     "YIELD_ORIENTED",
-    "Maximizes net annualized yield within allowable non-reserve capacity and volatile asset limits, utilizing JustLend incentive mining.",
+    "Allocates within confirmed reserve and volatile-exposure limits using the available source-backed market rates.",
     planBAllocations,
     72,
     34

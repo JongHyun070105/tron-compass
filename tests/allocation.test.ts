@@ -13,8 +13,8 @@ const sampleOpportunities: YieldOpportunity[] = normalizeJustLendMarketList(
 describe("Deterministic Allocation Engine", () => {
   const sampleProfile: NeedsProfile = {
     holdings: [
-      { asset: "USDD", amount: "1000", estimatedUsd: "1000" },
-      { asset: "TRX", amount: "2000", estimatedUsd: "500" }, // $500 TRX
+      { asset: "USDD", amount: "1000", usdValuation: { valueUsd: "1000", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
+      { asset: "TRX", amount: "2000", usdValuation: { valueUsd: "500", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } }, // simulated valuation
     ],
     horizonDays: 90,
     minimumLiquidUsd: "400", // Needs $400 liquid out of $1500
@@ -44,6 +44,19 @@ describe("Deterministic Allocation Engine", () => {
         expect(check.passed).toBe(true);
       }
     }
+  });
+
+  it("blocks allocation and marks My Rules UNKNOWN when a holding lacks sourced USD valuation", () => {
+    const profileWithoutValuation: NeedsProfile = {
+      ...sampleProfile,
+      holdings: [{ asset: "TRX", amount: "2000" }],
+    };
+    const { plans, totalCapitalUsd } = generateAllocationPlans(profileWithoutValuation, sampleOpportunities);
+
+    expect(totalCapitalUsd).toBe("0.00");
+    expect(plans.every((plan) => plan.allocations.length === 0)).toBe(true);
+    expect(plans.every((plan) => plan.usdValuationStatus === "UNAVAILABLE")).toBe(true);
+    expect(plans.every((plan) => plan.constraintChecks.find((check) => check.key === "USD_VALUATION_EVIDENCE")?.passed === false)).toBe(true);
   });
 
   it("strictly enforces minimum liquid reserve (>= $400)", () => {
@@ -88,7 +101,13 @@ describe("Deterministic Allocation Engine", () => {
 
     for (const p of plans) {
       expect(parseFloat(p.expectedBaseYieldUsd)).toBeGreaterThanOrEqual(0);
-      expect(parseFloat(p.expectedIncentiveYieldUsd)).toBeGreaterThanOrEqual(0);
+      if (p.allocations.some((leg) => leg.incentiveApy === null)) {
+        expect(p.expectedIncentiveYieldUsd).toBeNull();
+        expect(p.expectedNetYieldUsd).toBeNull();
+        expect(p.effectiveNetApy).toBeNull();
+      } else {
+        expect(Number(p.expectedIncentiveYieldUsd)).toBeGreaterThanOrEqual(0);
+      }
       expect(parseFloat(p.estimatedTotalCostUsd)).toBeGreaterThanOrEqual(0);
     }
   });

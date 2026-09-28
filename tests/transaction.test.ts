@@ -7,8 +7,116 @@ import {
   determineTransactionState,
 } from "../src/lib/tron/transaction";
 import { JUSTLEND_NILE_CONTRACTS } from "../src/lib/integrations/justlend/contracts";
+import * as transaction from "../src/lib/tron/transaction";
+import { compassStorage } from "../src/lib/persistence/storage";
+import { fetchNileJTrxBalance, fetchTronWalletBalances } from "../src/lib/tron/network";
 
 describe("TRON Execution Layer — Preflight & Preview", () => {
+  it("fails closed and records a stop instead of invoking the wallet for an out-of-rule pre-sign edit", async () => {
+    const gate = (transaction as any).evaluateNileExecutionSafety({
+      network: "Nile Testnet",
+      leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
+      preview: {
+        actionType: "SUPPLY",
+        amount: "2280",
+        amountRaw: "2280000000",
+        network: "NILE",
+        targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58,
+        method: "mint()",
+        estimatedFeeTrx: "15-25 TRX",
+        riskNotice: "Nile testnet",
+        approvalScope: "Supply TRX",
+      },
+      approvalShown: true,
+      evidence: [{ fetchedAt: new Date().toISOString(), reality: "LIVE_MAINNET" }],
+      rulesPassed: false,
+      ruleViolation: { ruleId: "R2", actual: "38%", required: "20%" },
+      now: Date.now(),
+    });
+    let invoked = false;
+    const result = await (transaction as any).executeIfNileGatePasses(gate, async () => {
+      invoked = true;
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.stops[0].outcome).toBe("STOPPED");
+    expect(result.stops[0].reason).toContain("38% > 20%");
+    expect(invoked).toBe(false);
+  });
+
+  it("marks evidence UNKNOWN / STALE and records a stop before signing", () => {
+    const now = Date.parse("2026-09-28T00:10:00.000Z");
+    const gate = (transaction as any).evaluateNileExecutionSafety({
+      network: "Nile Testnet",
+      leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
+      preview: { actionType: "SUPPLY", amount: "1", amountRaw: "1000000", network: "NILE", targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58, method: "mint()", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile", approvalScope: "Supply" },
+      approvedPreview: { actionType: "SUPPLY", amount: "1", amountRaw: "1000000", network: "NILE", targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58, method: "mint()", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile", approvalScope: "Supply" },
+      approvalShown: true,
+      evidence: [{ fetchedAt: "2026-09-28T00:00:00.000Z", reality: "LIVE_MAINNET" }],
+      rulesPassed: true,
+      now,
+    });
+
+    expect(gate.ready).toBe(false);
+    expect(gate.stops[0].guardId).toBe("MARKET_EVIDENCE_STALE");
+    expect(gate.stops[0].reason).toContain("UNKNOWN / STALE");
+  });
+
+  it("stops when incentive evidence is missing even if the base APY is fresh", () => {
+    const now = Date.parse("2026-09-28T00:10:00.000Z");
+    const gate = (transaction as any).evaluateNileExecutionSafety({
+      network: "Nile Testnet",
+      leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
+      preview: { actionType: "SUPPLY", amount: "1", amountRaw: "1000000", network: "NILE", targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58, method: "mint()", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile", approvalScope: "Supply" },
+      approvedPreview: { actionType: "SUPPLY", amount: "1", amountRaw: "1000000", network: "NILE", targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58, method: "mint()", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile", approvalScope: "Supply" },
+      approvalShown: true,
+      evidence: [
+        { fetchedAt: "2026-09-28T00:09:30.000Z", reality: "LIVE_MAINNET" },
+        { fetchedAt: null, reality: "SNAPSHOT" },
+      ],
+      valuationEvidence: [{ fetchedAt: "2026-09-28T00:09:30.000Z", reality: "LIVE_MAINNET" }],
+      rulesPassed: true,
+      now,
+    });
+
+    expect(gate.ready).toBe(false);
+    expect(gate.stops.some((stop: any) => stop.guardId === "MARKET_EVIDENCE_STALE")).toBe(true);
+  });
+
+  it("fails closed when holdings lack fresh source-backed USD valuation", () => {
+    const gate = (transaction as any).evaluateNileExecutionSafety({
+      network: "Nile Testnet",
+      leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
+      preview: { actionType: "SUPPLY", amount: "1", amountRaw: "1000000", network: "NILE", targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58, method: "mint()", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile", approvalScope: "Supply" },
+      approvedPreview: { actionType: "SUPPLY", amount: "1", amountRaw: "1000000", network: "NILE", targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58, method: "mint()", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile", approvalScope: "Supply" },
+      approvalShown: true,
+      evidence: [{ fetchedAt: new Date().toISOString(), reality: "LIVE_MAINNET" }],
+      valuationEvidence: [{ fetchedAt: null, reality: "SIMULATED" }],
+      rulesPassed: true,
+      now: Date.now(),
+    });
+
+    expect(gate.ready).toBe(false);
+    expect(gate.stops.some((stop: any) => stop.guardId === "HOLDING_VALUATION_STALE")).toBe(true);
+  });
+
+  it("stops when the transaction fields changed after the user saw approval", () => {
+    const shown = { actionType: "SUPPLY", amount: "1", amountRaw: "1000000", network: "NILE", targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58, method: "mint()", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile", approvalScope: "Supply" };
+    const gate = (transaction as any).evaluateNileExecutionSafety({
+      network: "Nile Testnet",
+      leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
+      preview: { ...shown, amount: "2", amountRaw: "2000000" },
+      approvedPreview: shown,
+      approvalShown: true,
+      evidence: [{ fetchedAt: new Date().toISOString(), reality: "LIVE_MAINNET" }],
+      rulesPassed: true,
+      now: Date.now(),
+    });
+
+    expect(gate.ready).toBe(false);
+    expect(gate.stops.some((stop: any) => stop.guardId === "APPROVAL_PARITY")).toBe(true);
+  });
+
   it("passes preflight checks when wallet is connected to Nile with sufficient balance", () => {
     const result = buildPreflightChecks({
       isWalletConnected: true,
@@ -21,6 +129,46 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
 
     expect(result.ready).toBe(true);
     expect(result.checks.every((c) => c.passed)).toBe(true);
+  });
+
+  it("reads jTRX balance using the 8-decimal Nile contract and returns unavailable outside Nile", async () => {
+    const balance = await fetchNileJTrxBalance("TUser", {
+      contract: async (abi: unknown, address: string) => {
+        expect(address).toBe(JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58);
+        expect(Array.isArray(abi)).toBe(true);
+        return { balanceOf: () => ({ call: async () => "12500000000" }) };
+      },
+    }, "nile");
+    const unavailable = await fetchNileJTrxBalance("TUser", {}, "mainnet");
+
+    expect(balance).toBe("125");
+    expect(unavailable).toBeNull();
+  });
+
+  it("shows only observed TRX balance and leaves unsupported token balances unavailable", async () => {
+    const balances = await fetchTronWalletBalances("TUser", {
+      trx: { getBalance: async () => 125_000_000 },
+    }, "nile");
+    const unavailable = await fetchTronWalletBalances("", {}, "nile");
+
+    expect(balances.trx).toBe("125.00");
+    expect(balances.usdd).toBe("UNAVAILABLE");
+    expect(balances.usdt).toBe("UNAVAILABLE");
+    expect(unavailable).toEqual({ trx: "UNAVAILABLE", usdd: "UNAVAILABLE", usdt: "UNAVAILABLE" });
+  });
+
+  it("does not parse an unavailable wallet balance as a real zero", () => {
+    const result = buildPreflightChecks({
+      isWalletConnected: true,
+      walletAddress: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+      currentNetwork: "Nile Testnet",
+      trxBalance: "UNAVAILABLE",
+      requiredAmount: "1",
+      asset: "TRX",
+    });
+    expect(result.ready).toBe(false);
+    expect(result.currentBalanceTrx).toBe("UNAVAILABLE");
+    expect(result.checks.find((check) => check.key === "BALANCE_SUFFICIENT")?.message).toContain("unavailable");
   });
 
   it("fails preflight check when wallet is not connected", () => {

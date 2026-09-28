@@ -10,6 +10,7 @@ import { PlanComparison } from "@/components/plans/PlanComparison";
 import { ExecutionModal } from "@/components/execution/ExecutionModal";
 import { ReplayMonitor } from "@/components/monitoring/ReplayMonitor";
 import { WhatIfControls } from "@/components/planner/WhatIfControls";
+import { DecisionReceiptPanel } from "@/components/decision/DecisionReceiptPanel";
 import {
   NeedsProfile,
   AllocationPlan,
@@ -17,11 +18,26 @@ import {
   YieldOpportunity,
 } from "@/domain/allocation/types";
 import { generateAllocationPlans, computeTotalCapitalUsd } from "@/domain/allocation/engine";
+import { hasCompleteUsdValuation } from "@/domain/allocation/valuation";
 import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
 import { compassStorage } from "@/lib/persistence/storage";
 import {
+  buildDecisionAssumptions,
+  buildDecisionEvidence,
+  buildDecisionScreening,
+  createChildDecisionReceipt,
+  createDecisionReceipt,
+  DecisionReceipt,
+  DecisionStopRecord,
+  makeStopRecord,
+  refreshDecisionReceiptIntegrity,
+  evaluateDecisionAssumptions,
+} from "@/domain/decision/receipt";
+import { buildInvestmentRules, evaluateDecisionRules } from "@/domain/allocation/rules";
+import {
   detectActiveTronNetwork,
   fetchTronWalletBalances,
+  fetchNileJTrxBalance,
 } from "@/lib/tron/network";
 import { PlanExplanation } from "@/lib/ai/schemas";
 import {
@@ -52,8 +68,28 @@ export default function HomePage() {
   // Planner & Engine States
   const [profile, setProfile] = useState<NeedsProfile>({
     holdings: [
-      { asset: "USDD", amount: "1000", estimatedUsd: "1000" },
-      { asset: "TRX", amount: "2000", estimatedUsd: "500" },
+      {
+        asset: "USDD",
+        amount: "1000",
+        usdValuation: {
+          valueUsd: "1000",
+          source: "TRON Compass demo fixture",
+          fetchedAt: null,
+          reality: "SIMULATED",
+          terms: "Synthetic portfolio value for the local demo; not a market quote.",
+        },
+      },
+      {
+        asset: "TRX",
+        amount: "2000",
+        usdValuation: {
+          valueUsd: "500",
+          source: "TRON Compass demo fixture",
+          fetchedAt: null,
+          reality: "SIMULATED",
+          terms: "Synthetic portfolio value for the local demo; not a market quote.",
+        },
+      },
     ],
     horizonDays: 90,
     minimumLiquidUsd: "300",
@@ -66,7 +102,9 @@ export default function HomePage() {
       "투자 기간 90일 기준 복리 수익 계산",
       "최소 상시 유동성 $300 확보",
     ],
+    sourceQuote: "여행비 $300은 남겨두고 코인 변동성은 낮게 유지하고 싶어.",
   });
+  const [confirmedProfile, setConfirmedProfile] = useState<NeedsProfile | null>(null);
 
   const [plans, setPlans] = useState<AllocationPlan[]>([]);
   const [aiExplanation, setAiExplanation] = useState<
@@ -78,6 +116,9 @@ export default function HomePage() {
 
   // Execution Modal State (Support both Supply & Redeem)
   const [isExecutionModalOpen, setIsExecutionModalOpen] = useState(false);
+  const [jTrxBalance, setJTrxBalance] = useState<string | null>("250.00");
+  const [activeReceipt, setActiveReceipt] = useState<DecisionReceipt | null>(null);
+  const [savedReceipts, setSavedReceipts] = useState<DecisionReceipt[]>([]);
   const [selectedPlanForExecution, setSelectedPlanForExecution] = useState<AllocationPlan | null>(null);
   const [selectedLegForExecution, setSelectedLegForExecution] = useState<AllocationLeg | null>(null);
   const [executionMode, setExecutionMode] = useState<"SUPPLY" | "REDEEM">("SUPPLY");
@@ -140,14 +181,34 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    compassStorage.getDecisionReceipts().then((receipts) => {
+      setSavedReceipts(receipts);
+      if (receipts[0]) setActiveReceipt(receipts[0]);
+    }).catch(console.warn);
+  }, []);
+
   // Instantaneous deterministic plan calculation upon profile confirmation
-  const handleProfileConfirmed = (confirmedProfile: NeedsProfile) => {
-    setProfile(confirmedProfile);
+  const handleProfileConfirmed = (draftProfile: NeedsProfile, sourceQuote: string) => {
+    const now = new Date().toISOString();
+    const rules = buildInvestmentRules(
+      draftProfile,
+      sourceQuote,
+      now,
+      confirmedProfile?.investmentRules ?? []
+    );
+    const nextProfile: NeedsProfile = {
+      ...draftProfile,
+      sourceQuote,
+      investmentRules: rules,
+    };
+    setConfirmedProfile(nextProfile);
+    setProfile(nextProfile);
     setCurrentStep(3); // Advance stepper to Plan Comparison
 
     if (opportunities.length > 0) {
       const { plans: generatedPlans } = generateAllocationPlans(
-        confirmedProfile,
+        nextProfile,
         opportunities,
         undefined,
         usddEvidence
@@ -161,7 +222,7 @@ export default function HomePage() {
           walletAddress: walletState.address,
           createdAt: new Date().toISOString(),
           plan: generatedPlans[0],
-          profile: confirmedProfile,
+          profile: nextProfile,
           marketSnapshot: opportunities,
         }).catch(console.warn);
       }
@@ -170,12 +231,13 @@ export default function HomePage() {
     plansRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  // Instantaneous What-If constraint tuning (0ms latency, zero AI call)
+  // Local What-if drafts do not amend confirmed rules or create approval authority.
   const handleWhatIfChange = (updatedProfile: NeedsProfile) => {
-    setProfile(updatedProfile);
+    const draftProfile = { ...updatedProfile, investmentRules: undefined };
+    setProfile(draftProfile);
     if (opportunities.length > 0) {
       const { plans: updatedPlans } = generateAllocationPlans(
-        updatedProfile,
+        draftProfile,
         opportunities,
         undefined,
         usddEvidence
@@ -217,10 +279,11 @@ export default function HomePage() {
   useEffect(() => {
     if (opportunities.length > 0 && plans.length === 0 && !initialPlanTriggeredRef.current) {
       initialPlanTriggeredRef.current = true;
-      handleProfileConfirmed(profile);
+      const { plans: initialPlans } = generateAllocationPlans(profile, opportunities, undefined, usddEvidence);
+      setPlans(initialPlans);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opportunities]);
+  }, [opportunities, usddEvidence]);
 
   // Handle wallet interactions with REAL on-chain balance fetching
   const handleConnect = async () => {
@@ -232,7 +295,8 @@ export default function HomePage() {
           const address = tw?.defaultAddress?.base58;
           if (address) {
             const net = detectActiveTronNetwork(tw);
-            const balances = await fetchTronWalletBalances(address, tw);
+            const balances = await fetchTronWalletBalances(address, tw, net.id === "nile" ? "nile" : "mainnet");
+            setJTrxBalance(await fetchNileJTrxBalance(address, tw, net.id === "nile" ? "nile" : "mainnet"));
 
             // Isolate real session: clear demo records
             await compassStorage.clearDemoExecutions();
@@ -257,12 +321,13 @@ export default function HomePage() {
   };
 
   const handleDisconnect = () => {
+    setJTrxBalance(null);
     setWalletState({
       isConnected: false,
       address: "",
       network: "",
-      trxBalance: "0.00",
-      usddBalance: "0.00",
+      trxBalance: "UNAVAILABLE",
+      usddBalance: "UNAVAILABLE",
       isDemoMode: false,
     });
   };
@@ -270,6 +335,7 @@ export default function HomePage() {
   const handleToggleDemoMode = async () => {
     if (!walletState.isDemoMode) {
       // Switch TO Demo mode
+      setJTrxBalance("250.00");
       setWalletState({
         isConnected: true,
         address: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
@@ -285,7 +351,8 @@ export default function HomePage() {
 
       if (tw && address) {
         const net = detectActiveTronNetwork(tw);
-        const balances = await fetchTronWalletBalances(address, tw);
+        const balances = await fetchTronWalletBalances(address, tw, net.id === "nile" ? "nile" : "mainnet");
+        setJTrxBalance(await fetchNileJTrxBalance(address, tw, net.id === "nile" ? "nile" : "mainnet"));
 
         await compassStorage.clearDemoExecutions();
 
@@ -298,12 +365,13 @@ export default function HomePage() {
           isDemoMode: false,
         });
       } else {
+        setJTrxBalance(null);
         setWalletState({
           isConnected: false,
           address: "",
           network: "Nile Testnet",
-          trxBalance: "0.00",
-          usddBalance: "0.00",
+          trxBalance: "UNAVAILABLE",
+          usddBalance: "UNAVAILABLE",
           isDemoMode: false,
         });
       }
@@ -321,7 +389,8 @@ export default function HomePage() {
         const address = tw?.defaultAddress?.base58;
         if (address && !walletState.isDemoMode) {
           const net = detectActiveTronNetwork(tw);
-          const balances = await fetchTronWalletBalances(address, tw);
+          const balances = await fetchTronWalletBalances(address, tw, net.id === "nile" ? "nile" : "mainnet");
+          setJTrxBalance(await fetchNileJTrxBalance(address, tw, net.id === "nile" ? "nile" : "mainnet"));
           setWalletState((prev) => ({
             ...prev,
             address,
@@ -337,16 +406,151 @@ export default function HomePage() {
     return () => window.removeEventListener("message", handleTronMessage);
   }, [walletState.isDemoMode]);
 
-  const handleSelectActionForExecution = (
+  const saveReceipt = async (receipt: DecisionReceipt) => {
+    const updated = await refreshDecisionReceiptIntegrity(receipt);
+    await compassStorage.saveDecisionReceipt(updated);
+    setActiveReceipt(updated);
+    setSavedReceipts((previous) => [updated, ...previous.filter((item) => item.id !== updated.id)]);
+  };
+
+  const createReceiptForPlan = async (
+    plan: AllocationPlan,
+    decisionProfile: NeedsProfile,
+    evidenceOpportunities: YieldOpportunity[],
+    parent: DecisionReceipt | null = null,
+    assumptions = buildDecisionAssumptions(decisionProfile, plan, evidenceOpportunities, usddEvidence, new Date().toISOString())
+  ) => {
+    const now = new Date().toISOString();
+    const rules = decisionProfile.investmentRules ?? [];
+    const alternatives = plans.map((candidate) => ({
+      planId: candidate.id,
+      allocations: candidate.allocations,
+      usdValuationStatus: candidate.usdValuationStatus,
+      baseYield: candidate.expectedBaseYieldUsd,
+      incentiveYield: candidate.expectedIncentiveYieldUsd,
+      estimatedCost: candidate.estimatedTotalCostUsd,
+      exitCondition: candidate.exitConditions,
+      risks: candidate.risks,
+      ruleEvaluation: candidate.constraintChecks,
+      executionReality: candidate.allocations.some((leg) => leg.executabilityClass === "NILE_EXECUTABLE")
+        ? "NILE_EXECUTABLE" as const
+        : candidate.allocations.length ? "LIVE_DATA_ONLY" as const : "UNAVAILABLE" as const,
+    }));
+    if (!alternatives.some((item) => item.planId === plan.id)) {
+      alternatives.push({
+        planId: plan.id,
+        allocations: plan.allocations,
+        usdValuationStatus: plan.usdValuationStatus,
+        baseYield: plan.expectedBaseYieldUsd,
+        incentiveYield: plan.expectedIncentiveYieldUsd,
+        estimatedCost: plan.estimatedTotalCostUsd,
+        exitCondition: plan.exitConditions,
+        risks: plan.risks,
+        ruleEvaluation: plan.constraintChecks,
+        executionReality: plan.allocations.some((leg) => leg.executabilityClass === "NILE_EXECUTABLE") ? "NILE_EXECUTABLE" : plan.allocations.length ? "LIVE_DATA_ONLY" : "UNAVAILABLE",
+      });
+    }
+    const draft = {
+      id: `receipt-${Date.now()}`,
+      parentId: parent?.id ?? null,
+      createdAt: now,
+      rules: { version: Math.max(0, ...rules.map((rule) => rule.version)), items: rules },
+      needsConfirmedAt: rules.length ? rules.reduce((latest, rule) => rule.confirmedAt > latest ? rule.confirmedAt : latest, "") : null,
+      evidence: buildDecisionEvidence(evidenceOpportunities, usddEvidence, now, decisionProfile),
+      screening: buildDecisionScreening(
+        decisionProfile,
+        evidenceOpportunities,
+        plans.some((candidate) => candidate.id === plan.id) ? plans : [...plans, plan]
+      ),
+      alternatives,
+      assumptions,
+      selection: { planId: plan.id, selectedAt: now },
+      approval: { shown: null, signer: null, approvedAt: null },
+    };
+    return parent ? createChildDecisionReceipt(parent, draft) : createDecisionReceipt(draft);
+  };
+
+  const handleSelectActionForExecution = async (
     plan: AllocationPlan,
     leg: AllocationLeg,
     mode: "SUPPLY" | "REDEEM" = "SUPPLY"
   ) => {
+    const decisionProfile = confirmedProfile ?? profile;
+    const receipt = await createReceiptForPlan(plan, decisionProfile, opportunities);
+    await saveReceipt(receipt);
     setSelectedPlanForExecution(plan);
     setSelectedLegForExecution(leg);
     setExecutionMode(mode);
     setCurrentStep(4); // Advance to Execution step
     setIsExecutionModalOpen(true);
+  };
+
+  const handleReplayAssumptions = async (
+    scenarioTitle: string,
+    assumptions: DecisionReceipt["assumptions"],
+    mode: "LIVE" | "SIMULATED"
+  ) => {
+    if (!activeReceipt) return;
+    const reviewedAt = new Date().toISOString();
+    const updated = {
+      ...activeReceipt,
+      reviews: [...activeReceipt.reviews, {
+        id: `review-${Date.now()}`,
+        reviewedAt,
+        title: scenarioTitle,
+        mode,
+        assumptions,
+        proposalPlanId: null,
+      }],
+    };
+    await saveReceipt(updated);
+  };
+
+  const handleApplyRebalance = async (
+    newPlan: AllocationPlan,
+    simulatedOpportunities: YieldOpportunity[],
+    reviewedAssumptions: DecisionReceipt["assumptions"]
+  ) => {
+    const decisionProfile = confirmedProfile ?? profile;
+    const sharedEvaluation = evaluateDecisionRules(
+      decisionProfile,
+      computeTotalCapitalUsd(decisionProfile),
+      newPlan.allocations,
+      simulatedOpportunities
+    );
+    if (!sharedEvaluation.passed) {
+      const failedRule = sharedEvaluation.checks.find((check) => !check.passed);
+      if (activeReceipt) {
+        const stop: DecisionStopRecord = makeStopRecord({
+          timestamp: new Date().toISOString(),
+          stage: "REBALANCE",
+          ruleId: failedRule?.ruleId ?? null,
+          guardId: failedRule?.key ?? "REBALANCE_RULES",
+          attemptedAction: "REBALANCE_PROPOSAL",
+          attemptedAmount: null,
+          reason: failedRule?.detail ?? "The proposed allocation did not pass shared My Rules.",
+        });
+        await saveReceipt({ ...activeReceipt, stops: [...activeReceipt.stops, stop] });
+      }
+      return;
+    }
+
+    const parent = activeReceipt;
+    if (parent) {
+      const child = await createReceiptForPlan(newPlan, decisionProfile, simulatedOpportunities, parent, reviewedAssumptions);
+      child.reviews.push({
+        id: `review-${Date.now()}`,
+        reviewedAt: new Date().toISOString(),
+        title: "Proposal generated from replayed assumption change",
+        mode: "SIMULATED",
+        assumptions: reviewedAssumptions,
+        proposalPlanId: newPlan.id,
+      });
+      await saveReceipt(child);
+    }
+    setPlans((current) => [newPlan, ...current.filter((item) => item.id !== newPlan.id)]);
+    setActiveTab("PLANNER");
+    setCurrentStep(3);
   };
 
   const handleStepSelect = (step: JourneyStep) => {
@@ -372,6 +576,16 @@ export default function HomePage() {
       setActiveTab("MONITOR");
     }
   };
+
+  const walletHoldings = walletState.isDemoMode
+    ? []
+    : [
+        { asset: "USDD", amount: walletState.usddBalance },
+        { asset: "TRX", amount: walletState.trxBalance },
+      ].filter(({ amount }) => {
+        const normalized = amount.replace(/,/g, "").trim();
+        return normalized !== "" && Number.isFinite(Number(normalized)) && Number(normalized) > 0;
+      }).map(({ asset, amount }) => ({ asset, amount: amount.replace(/,/g, "").trim() }));
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
@@ -406,7 +620,7 @@ export default function HomePage() {
               }`}
             >
               <Sparkles className="w-4 h-4 text-amber-400" />
-              <span>AI 플래너 & 플랜 비교</span>
+              <span>Talk · My Rules · Compare</span>
             </button>
 
             <button
@@ -433,7 +647,7 @@ export default function HomePage() {
               }`}
             >
               <History className="w-4 h-4 text-amber-500" />
-              <span>모의 리플레이 & 모니터링</span>
+              <span>Assumption Review · Replay</span>
             </button>
           </div>
 
@@ -466,19 +680,16 @@ export default function HomePage() {
             {/* Step 2: Goals / AI Needs Analysis */}
             <div ref={goalsRef}>
               <AiNeedsPlanner
-                currentProfile={profile}
+                currentProfile={confirmedProfile ?? profile}
                 onProfileConfirmed={handleProfileConfirmed}
-                walletHoldings={[
-                  { asset: "USDD", amount: walletState.usddBalance.replace(/,/g, "") },
-                  { asset: "TRX", amount: walletState.trxBalance.replace(/,/g, "") },
-                ]}
+                walletHoldings={walletHoldings}
               />
             </div>
 
-            {/* Step 2.5: Interactive What-If Simulation Controls (0ms Latency, Local Deterministic) */}
+            {/* What-if stays a secondary local simulation and does not amend My Rules. */}
             <WhatIfControls
               profile={profile}
-              totalPortfolioUsd={computeTotalCapitalUsd(profile)}
+              totalPortfolioUsd={hasCompleteUsdValuation(profile) ? computeTotalCapitalUsd(profile) : null}
               onChange={handleWhatIfChange}
             />
 
@@ -494,6 +705,7 @@ export default function HomePage() {
                 onRequestAiExplanation={handleRequestAiExplanation}
               />
             </div>
+            <DecisionReceiptPanel receipt={activeReceipt} />
           </div>
         )}
 
@@ -514,15 +726,15 @@ export default function HomePage() {
         {activeTab === "MONITOR" && (
           <div className="space-y-6 animate-in fade-in">
             <ReplayMonitor
-              originalPlan={plans[1] || plans[0] || null}
-              profile={profile}
+              originalPlan={plans.find((plan) => plan.id === activeReceipt?.selection.planId) || plans[1] || plans[0] || null}
+              profile={confirmedProfile ?? profile}
               liveOpportunities={opportunities}
-              onApplyRebalance={(newPlan) => {
-                setPlans([newPlan, ...plans.filter((p) => p.id !== newPlan.id)]);
-                setActiveTab("PLANNER");
-                setCurrentStep(3);
-              }}
+              usddEvidence={usddEvidence}
+              decisionReceipt={activeReceipt}
+              onAssumptionsEvaluated={(title, assumptions, mode) => handleReplayAssumptions(title, assumptions, mode)}
+              onApplyRebalance={handleApplyRebalance}
             />
+            <DecisionReceiptPanel receipt={activeReceipt} />
           </div>
         )}
       </main>
@@ -537,8 +749,14 @@ export default function HomePage() {
         isWalletConnected={walletState.isConnected}
         isDemoMode={walletState.isDemoMode}
         trxBalance={walletState.trxBalance}
+        jTrxBalance={jTrxBalance ?? "0"}
         networkName={walletState.network}
         initialMode={executionMode}
+        profile={confirmedProfile ?? profile}
+        opportunities={opportunities}
+        usddEvidence={usddEvidence}
+        decisionReceipt={activeReceipt}
+        onDecisionReceiptUpdate={saveReceipt}
         onExecutionCompleted={(hash) => {
           console.log("Transaction executed on Nile:", hash);
           setCurrentStep(5); // Move to post-execution monitoring
@@ -551,7 +769,7 @@ export default function HomePage() {
           <div className="flex items-center gap-2">
             <strong className="text-slate-900 font-bold">TRON Compass</strong>
             <span>—</span>
-            <span>AI understands. Code verifies. User approves. TRON executes.</span>
+            <span>AI understands. Code verifies. You approve. TRON executes. The receipt remembers.</span>
           </div>
           <div className="flex items-center gap-4 text-slate-400">
             <span>GWDC 2026 TRON Challenge B</span>

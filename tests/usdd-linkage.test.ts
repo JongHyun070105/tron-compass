@@ -14,8 +14,8 @@ const sampleOpportunities: YieldOpportunity[] = normalizeJustLendMarketList(
 describe("USDD Evidence & Decision Linkage Engine", () => {
   const sampleProfile: NeedsProfile = {
     holdings: [
-      { asset: "USDD", amount: "1000", estimatedUsd: "1000" },
-      { asset: "TRX", amount: "2000", estimatedUsd: "500" },
+      { asset: "USDD", amount: "1000", usdValuation: { valueUsd: "1000", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
+      { asset: "TRX", amount: "2000", usdValuation: { valueUsd: "500", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
     ],
     horizonDays: 90,
     minimumLiquidUsd: "300",
@@ -55,6 +55,7 @@ describe("USDD Evidence & Decision Linkage Engine", () => {
     const signal = evaluateUsddDecisionSignal(evidence);
 
     expect(signal.riskClass).toBe("HEALTHY");
+    expect(signal.thresholdProvenance).toBe("COMPASS_POLICY");
     expect(signal.eligibleForConservativePlan).toBe(true);
     expect(signal.eligibleForYieldPlan).toBe(true);
 
@@ -71,6 +72,7 @@ describe("USDD Evidence & Decision Linkage Engine", () => {
     const signal = evaluateUsddDecisionSignal(evidence);
 
     expect(signal.riskClass).toBe("CAUTION");
+    expect(signal.thresholdProvenance).toBe("COMPASS_POLICY");
     expect(signal.eligibleForConservativePlan).toBe(false);
     expect(signal.eligibleForYieldPlan).toBe(true);
 
@@ -109,10 +111,13 @@ describe("USDD Evidence & Decision Linkage Engine", () => {
     expect(signal.isFallback).toBe(true);
     expect(signal.riskClass).toBe("CAUTION"); // Stale data defaults to conservative CAUTION
     expect(signal.eligibleForConservativePlan).toBe(false);
+    expect(signal.eligibleForYieldPlan).toBe(false);
 
     // Missing evidence entirely
     const missingSignal = evaluateUsddDecisionSignal(null);
     expect(missingSignal.riskClass).toBe("CAUTION");
+    expect(missingSignal.collateralRatioPct).toBeNull();
+    expect(missingSignal.eligibleForYieldPlan).toBe(false);
     expect(missingSignal.eligibleForConservativePlan).toBe(false);
   });
 });

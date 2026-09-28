@@ -84,15 +84,29 @@ describe("Yield Calculation Engine", () => {
     );
 
     expect(parseFloat(decomposition.baseYieldUsd)).toBeGreaterThan(0);
-    expect(parseFloat(decomposition.incentiveYieldUsd)).toBeGreaterThan(
+    expect(Number(decomposition.incentiveYieldUsd)).toBeGreaterThan(
       parseFloat(decomposition.baseYieldUsd)
     );
     expect(decomposition.totalCostUsd).toBe("3.0000");
 
     const expectedNet =
       parseFloat(decomposition.baseYieldUsd) +
-      parseFloat(decomposition.incentiveYieldUsd) -
+      Number(decomposition.incentiveYieldUsd) -
       3.0;
-    expect(parseFloat(decomposition.netYieldUsd)).toBeCloseTo(expectedNet, 2);
+    expect(Number(decomposition.netYieldUsd)).toBeCloseTo(expectedNet, 2);
+  });
+
+  it("keeps net return unavailable when incentive evidence is missing", () => {
+    const decomposition = decomposeLegYield("1000", "0.03", null, 180, "1", "1");
+    expect(decomposition.baseYieldUsd).not.toBe("0");
+    expect(decomposition.incentiveYieldUsd).toBeNull();
+    expect(decomposition.netYieldUsd).toBeNull();
+    expect(decomposition.effectiveNetApy).toBeNull();
+  });
+
+  it("preserves a negative net APY when policy costs exceed yield", () => {
+    const decomposition = decomposeLegYield("100", "0.01", "0", 30, "2", "2");
+    expect(Number(decomposition.netYieldUsd)).toBeLessThan(0);
+    expect(Number(decomposition.effectiveNetApy)).toBeLessThan(0);
   });
 });

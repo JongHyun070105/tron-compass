@@ -1,3 +1,6 @@
+import { formatUnits } from "@/lib/math/decimal";
+import { JTRX_ABI, JUSTLEND_NILE_CONTRACTS } from "@/lib/integrations/justlend/contracts";
+
 export type TronNetwork = "mainnet" | "nile";
 
 export interface TronNetworkConfig {
@@ -71,16 +74,14 @@ export function detectActiveTronNetwork(tronWebInstance?: any): {
 
 /**
  * Fetches real on-chain balances for TRX and tokens from TronWeb or server-side TronGrid client.
- * Strictly returns exact balances or "0.00", NEVER fake mock numbers.
+ * Returns the observed TRX balance and marks token balances unavailable until token reads exist.
  */
 export async function fetchTronWalletBalances(
   address: string,
   tronWebInstance?: any,
   network: TronNetwork = "nile"
 ): Promise<{ trx: string; usdd: string; usdt: string; rawSun?: number }> {
-  if (!address) {
-    return { trx: "0.00", usdd: "0.00", usdt: "0.00", rawSun: 0 };
-  }
+  if (!address) return { trx: "UNAVAILABLE", usdd: "UNAVAILABLE", usdt: "UNAVAILABLE" };
 
   const tw =
     tronWebInstance ||
@@ -88,6 +89,7 @@ export async function fetchTronWalletBalances(
 
   let sunNum = 0;
   let fetchedFromTronWeb = false;
+  let balanceAvailable = false;
 
   if (tw) {
     try {
@@ -96,6 +98,7 @@ export async function fetchTronWalletBalances(
       if (!isNaN(parsed)) {
         sunNum = parsed;
         fetchedFromTronWeb = true;
+        balanceAvailable = true;
       }
     } catch (err) {
       console.warn("TronWeb getBalance failed:", err);
@@ -112,6 +115,7 @@ export async function fetchTronWalletBalances(
         const data = await res.json();
         if (data.success && typeof data.balanceSun === "number") {
           sunNum = data.balanceSun;
+          balanceAvailable = true;
         }
       }
     } catch (err) {
@@ -119,10 +123,33 @@ export async function fetchTronWalletBalances(
     }
   }
 
+  if (!balanceAvailable) {
+    return { trx: "UNAVAILABLE", usdd: "UNAVAILABLE", usdt: "UNAVAILABLE" };
+  }
+
   const trx = (sunNum / 1_000_000).toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
   });
 
-  return { trx, usdd: "0.00", usdt: "0.00", rawSun: sunNum };
+  return { trx, usdd: "UNAVAILABLE", usdt: "UNAVAILABLE", rawSun: sunNum };
+}
+
+/** Reads the connected Nile wallet's actual jTRX balance using the verified 8-decimal token ABI. */
+export async function fetchNileJTrxBalance(
+  address: string,
+  tronWebInstance?: any,
+  network: TronNetwork = "nile"
+): Promise<string | null> {
+  if (!address || network !== "nile") return null;
+  const tw = tronWebInstance || (typeof window !== "undefined" ? (window as any).tronWeb : null);
+  if (!tw) return null;
+  try {
+    const contract = await tw.contract(JTRX_ABI, JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58);
+    const rawBalance = await contract.balanceOf(address).call();
+    return formatUnits(String(rawBalance), JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.decimals);
+  } catch (err) {
+    console.warn("Nile jTRX balance query failed:", err);
+    return null;
+  }
 }

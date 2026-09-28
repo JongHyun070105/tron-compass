@@ -3,9 +3,9 @@ import "./globals.css";
 import { Providers } from "@/components/providers";
 
 export const metadata: Metadata = {
-  title: "TRON Compass — AI 자산 배분 & 수익 플래너",
+  title: "TRON Compass — Verifiable Yield Decisions",
   description:
-    "누구나 10초 만에 이해하는 TRON 스마트 자산 배분 및 JustLend 수익 계획 도우미",
+    "TRON Compass turns a conversation about your money into a yield decision that can be verified before signing and re-checked when its assumptions change.",
 };
 
 export default function RootLayout({

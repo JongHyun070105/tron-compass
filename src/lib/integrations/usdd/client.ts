@@ -4,6 +4,7 @@ import {
 } from "./schemas";
 import { USDD_FALLBACK_FIXTURE } from "./fixture";
 import { SafeMath, toPercentString } from "@/lib/math/decimal";
+import { EvidenceReality } from "@/domain/allocation/types";
 
 const USDD_OVERVIEW_URL = "https://app-api.usdd.io/data-platform/overview/info";
 const USDD_COLLATERAL_URL =
@@ -22,7 +23,9 @@ export interface UsddProtocolEvidence {
     collateralRatio: string;
   }>;
   source: "live" | "fallback";
-  fetchedAt: string;
+  fetchedAt: string | null;
+  sourceUrl?: string;
+  reality?: EvidenceReality;
 }
 
 export async function fetchUsddEvidence(): Promise<UsddProtocolEvidence> {
@@ -57,9 +60,9 @@ export async function fetchUsddEvidence(): Promise<UsddProtocolEvidence> {
     const collateral = overviewParsed.data.totalCollateralValue;
 
     const ratio =
-      parseFloat(supply) > 0
+      Number.isFinite(Number(supply)) && Number(supply) > 0
         ? toPercentString(SafeMath.div(collateral, supply).toString(), 2)
-        : "148.00%";
+        : "UNAVAILABLE";
 
     const vaults = collateralParsed.data.items.slice(0, 4).map((item) => ({
       vaultType: item.vaultType,
@@ -73,10 +76,12 @@ export async function fetchUsddEvidence(): Promise<UsddProtocolEvidence> {
       totalCollateralUsd: `$${(parseFloat(collateral) / 1_000_000).toFixed(2)}M`,
       collateralRatioPct: ratio,
       earnTvlUsd: `$${(parseFloat(overviewParsed.data.earnTvl) / 1_000_000).toFixed(2)}M`,
-      psmStatus: "1:1 Pegged with USDT (0% Slippage via PSM)",
+      psmStatus: "Not evaluated by this evidence route",
       vaults,
       source: "live",
       fetchedAt: new Date().toISOString(),
+      sourceUrl: USDD_OVERVIEW_URL,
+      reality: "LIVE_MAINNET",
     };
   } catch (err) {
     clearTimeout(timeoutId);
@@ -86,7 +91,7 @@ export async function fetchUsddEvidence(): Promise<UsddProtocolEvidence> {
       totalCollateralUsd: `$${(parseFloat(USDD_FALLBACK_FIXTURE.overview.totalCollateralValue) / 1_000_000).toFixed(2)}M`,
       collateralRatioPct: USDD_FALLBACK_FIXTURE.overview.collateralRatio,
       earnTvlUsd: `$${(parseFloat(USDD_FALLBACK_FIXTURE.overview.earnTvl) / 1_000_000).toFixed(2)}M`,
-      psmStatus: "1:1 Pegged with USDT (0% Slippage via PSM)",
+      psmStatus: "Not evaluated by this evidence route",
       vaults: USDD_FALLBACK_FIXTURE.vaults.map((v) => ({
         vaultType: v.vaultType,
         lockedValueUsd: v.lockedValueUsd,
@@ -94,7 +99,9 @@ export async function fetchUsddEvidence(): Promise<UsddProtocolEvidence> {
         collateralRatio: v.collateralRatio,
       })),
       source: "fallback",
-      fetchedAt: new Date().toISOString(),
+      fetchedAt: null,
+      sourceUrl: USDD_FALLBACK_FIXTURE.overview.source,
+      reality: "SNAPSHOT",
     };
   }
 }

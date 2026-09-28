@@ -29,7 +29,10 @@ describe("JustLend Integration & Normalization", () => {
     expect(opp?.executionNetwork).toBe("NILE");
     expect(opp?.nileContractAddress).toBe("TKM7w4qFmkXQLEF2MgrQroBYpd5TY7i1pq");
     expect(opp?.baseApy).toBe("0.003170");
-    expect(opp?.totalApy).toBe("0.003170");
+    expect(opp?.totalApy).toBeNull();
+    expect(opp?.incentiveApy).toBeNull();
+    expect(opp?.reality).toBe("SNAPSHOT");
+    expect(opp?.evidenceTerms).toContain("variable by market utilization");
   });
 
   it("filters out legacy markets ending with OLD", () => {
@@ -63,10 +66,47 @@ describe("JustLend Integration & Normalization", () => {
     expect(symbols).toContain("USDT");
   });
 
+  it("keeps mining APY unknown unless the separate source is successfully observed", () => {
+    const jUsdd = JUSTLEND_FALLBACK_FIXTURE.data.tokenList.find((token) => token.symbol === "jUSDD") as RawJustLendToken;
+    const unavailable = normalizeJustLendToken(jUsdd, "2026-09-29T00:00:00.000Z", "LIVE_MAINNET");
+    expect(unavailable?.incentiveApy).toBeNull();
+    expect(unavailable?.totalApy).toBeNull();
+    expect(unavailable?.incentiveFetchedAt).toBeNull();
+
+    const observed = normalizeJustLendToken(
+      jUsdd,
+      "2026-09-29T00:00:00.000Z",
+      "LIVE_MAINNET",
+      { [jUsdd.address]: { USDD: "0.04021273" } },
+      "2026-09-29T00:00:02.000Z"
+    );
+    expect(observed?.incentiveApy).toBe("0.040213");
+    expect(observed?.totalApy).toBe((Number(observed?.baseApy) + 0.040213).toFixed(6));
+    expect(observed?.incentiveSourceUrl).toBe("https://openapi.just.network/mining/apy");
+    expect(observed?.incentiveFetchedAt).toBe("2026-09-29T00:00:02.000Z");
+    expect(observed?.incentiveReality).toBe("LIVE_MAINNET");
+
+    const noActiveMining = normalizeJustLendToken(
+      jUsdd,
+      "2026-09-29T00:00:00.000Z",
+      "LIVE_MAINNET",
+      {},
+      "2026-09-29T00:00:02.000Z"
+    );
+    expect(noActiveMining?.incentiveApy).toBe("0.000000");
+    expect(noActiveMining?.totalApy).toBe(noActiveMining?.baseApy);
+  });
+
   it("fetches market data and returns valid YieldOpportunity array", async () => {
     const res = await fetchJustLendMarkets();
     expect(res.markets.length).toBeGreaterThan(0);
     expect(res.source).toMatch(/live|cache|fallback/);
+    for (const market of res.markets.filter((item) => item.incentiveApy !== null)) {
+      expect(market.incentiveReality).toBe("LIVE_MAINNET");
+      expect(market.incentiveFetchedAt).toBeTruthy();
+      expect(market.incentiveSourceUrl).toBe("https://openapi.just.network/mining/apy");
+      expect(Number(market.totalApy)).toBeCloseTo(Number(market.baseApy) + Number(market.incentiveApy), 6);
+    }
   });
 });
 

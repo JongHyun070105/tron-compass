@@ -5,6 +5,8 @@ import {
   ConstraintCheckResult,
 } from "./types";
 import { SafeMath, toDecimal, toPercentString, toUsdString } from "@/lib/math/decimal";
+import { getRuleForType } from "./rules";
+import { hasCompleteUsdValuation } from "./valuation";
 
 export function evaluateHardConstraints(
   profile: NeedsProfile,
@@ -17,9 +19,24 @@ export function evaluateHardConstraints(
 } {
   const checks: ConstraintCheckResult[] = [];
   let allPassed = true;
+  const valuationComplete = hasCompleteUsdValuation(profile);
 
   const totalCap = toDecimal(totalCapitalUsd);
-  const minLiquid = toDecimal(profile.minimumLiquidUsd);
+  const liquidityRule = getRuleForType(profile.investmentRules, "MINIMUM_LIQUIDITY");
+  const volatileRule = getRuleForType(profile.investmentRules, "MAX_VOLATILE_EXPOSURE");
+  const minLiquid = toDecimal(liquidityRule?.value ?? profile.minimumLiquidUsd);
+
+  if (!valuationComplete) allPassed = false;
+  checks.push({
+    key: "USD_VALUATION_EVIDENCE",
+    name: "USD Valuation Evidence",
+    passed: valuationComplete,
+    required: "Every holding needs an explicit sourced USD valuation",
+    actual: valuationComplete ? "Available" : "UNKNOWN",
+    detail: valuationComplete
+      ? "Every holding has an explicit USD value and recorded source/reality."
+      : "One or more holdings lack a sourced USD valuation; exposure and reserve checks cannot be trusted.",
+  });
 
   // 1. Calculate allocated capital and remaining liquid reserve
   let totalAllocatedUsd = toDecimal(0);
@@ -42,36 +59,44 @@ export function evaluateHardConstraints(
   const liquidReserveUsd = totalCap.minus(totalAllocatedUsd);
 
   // Check 1: Minimum Liquid Reserve (Hard constraint)
-  const passedLiquid = liquidReserveUsd.gte(minLiquid);
+  const passedLiquid = valuationComplete && liquidReserveUsd.gte(minLiquid);
   if (!passedLiquid) allPassed = false;
   checks.push({
     key: "MIN_LIQUIDITY",
     name: "Minimum Liquid Reserve",
     passed: passedLiquid,
+    ruleId: liquidityRule?.id,
+    ruleVersion: liquidityRule?.version,
     required: `>= ${toUsdString(minLiquid.toString())}`,
-    actual: toUsdString(liquidReserveUsd.toString()),
+    actual: valuationComplete ? toUsdString(liquidReserveUsd.toString()) : "UNKNOWN",
     detail: passedLiquid
       ? `Maintains ${toUsdString(liquidReserveUsd.toString())} in reserve, exceeding required ${toUsdString(minLiquid.toString())}.`
-      : `Liquid reserve ${toUsdString(liquidReserveUsd.toString())} falls below required ${toUsdString(minLiquid.toString())}.`,
+      : valuationComplete
+        ? `Liquid reserve ${toUsdString(liquidReserveUsd.toString())} falls below required ${toUsdString(minLiquid.toString())}.`
+        : "Cannot evaluate the liquid reserve because USD valuation evidence is unavailable.",
   });
 
   // Check 2: Maximum Volatile Asset Exposure (Hard constraint)
-  const maxVolatilePct = toDecimal(profile.maxVolatileExposurePct);
+  const maxVolatilePct = toDecimal(volatileRule?.value ?? profile.maxVolatileExposurePct);
   const actualVolatilePct = totalCap.gt(0)
     ? volatileAllocatedUsd.div(totalCap)
     : toDecimal(0);
 
-  const passedVolatile = actualVolatilePct.lte(maxVolatilePct.plus(0.0001)); // epsilon tolerance
+  const passedVolatile = valuationComplete && actualVolatilePct.lte(maxVolatilePct.plus(0.0001)); // epsilon tolerance
   if (!passedVolatile) allPassed = false;
   checks.push({
     key: "MAX_VOLATILE_EXPOSURE",
     name: "Maximum Volatile Exposure",
     passed: passedVolatile,
+    ruleId: volatileRule?.id,
+    ruleVersion: volatileRule?.version,
     required: `<= ${toPercentString(maxVolatilePct.toString())}`,
-    actual: toPercentString(actualVolatilePct.toString()),
+    actual: valuationComplete ? toPercentString(actualVolatilePct.toString()) : "UNKNOWN",
     detail: passedVolatile
       ? `Volatile exposure is ${toPercentString(actualVolatilePct.toString())}, strictly within user limit of ${toPercentString(maxVolatilePct.toString())}.`
-      : `Volatile exposure of ${toPercentString(actualVolatilePct.toString())} exceeds maximum permitted limit ${toPercentString(maxVolatilePct.toString())}.`,
+      : valuationComplete
+        ? `Volatile exposure of ${toPercentString(actualVolatilePct.toString())} exceeds maximum permitted limit ${toPercentString(maxVolatilePct.toString())}.`
+        : "Cannot evaluate volatile exposure because USD valuation evidence is unavailable.",
   });
 
   // Check 3: Holding Capacity Limits (Cannot allocate more than owned)
@@ -100,7 +125,10 @@ export function evaluateHardConstraints(
   });
 
   // Check 4: Excluded Assets Check
-  const excluded = new Set(profile.excludedAssets || []);
+  const excludedRules = profile.investmentRules?.filter((rule) => rule.type === "EXCLUDED_ASSET");
+  const excluded = new Set(
+    excludedRules?.length ? excludedRules.map((rule) => rule.value) : profile.excludedAssets || []
+  );
   let excludedPassed = true;
   for (const leg of allocations) {
     if (excluded.has(leg.asset)) {
@@ -114,6 +142,8 @@ export function evaluateHardConstraints(
     key: "EXCLUDED_ASSETS",
     name: "Excluded Assets Compliance",
     passed: excludedPassed,
+    ruleId: excludedRules?.[0]?.id,
+    ruleVersion: excludedRules?.[0]?.version,
     required: "Zero allocation to excluded assets",
     actual: excludedPassed ? "Compliant" : "Violation",
     detail: excludedPassed

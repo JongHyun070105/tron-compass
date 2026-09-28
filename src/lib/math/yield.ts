@@ -60,10 +60,10 @@ export function calculateEffectiveApy(
 
 export interface YieldDecomposition {
   baseYieldUsd: string;
-  incentiveYieldUsd: string;
+  incentiveYieldUsd: string | null;
   totalCostUsd: string;
-  netYieldUsd: string;
-  effectiveNetApy: string;
+  netYieldUsd: string | null;
+  effectiveNetApy: string | null;
 }
 
 /**
@@ -72,21 +72,30 @@ export interface YieldDecomposition {
 export function decomposeLegYield(
   usdValue: string,
   baseApy: string,
-  incentiveApy: string,
+  incentiveApy: string | null | undefined,
   horizonDays: number,
   estimatedEntryCostUsd: string = "0",
   estimatedExitCostUsd: string = "0"
 ): YieldDecomposition {
   const baseYieldUsd = calculateHorizonYield(usdValue, baseApy, horizonDays);
-  const incentiveYieldUsd = calculateHorizonYield(usdValue, incentiveApy, horizonDays);
-
   const totalCost = SafeMath.add(estimatedEntryCostUsd, estimatedExitCostUsd);
+  if (incentiveApy === null || incentiveApy === undefined) {
+    return {
+      baseYieldUsd,
+      incentiveYieldUsd: null,
+      totalCostUsd: totalCost.toFixed(4),
+      netYieldUsd: null,
+      effectiveNetApy: null,
+    };
+  }
+
+  const incentiveYieldUsd = calculateHorizonYield(usdValue, incentiveApy, horizonDays);
   const grossYield = SafeMath.add(baseYieldUsd, incentiveYieldUsd);
   const netYield = grossYield.minus(totalCost);
 
   const effectiveNetApy = calculateEffectiveApy(
     usdValue,
-    netYield.isNegative() ? "0" : netYield.toString(),
+    netYield.toString(),
     horizonDays
   );
 

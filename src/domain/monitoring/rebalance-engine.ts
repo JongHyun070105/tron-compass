@@ -5,7 +5,7 @@ import {
 } from "../allocation/types";
 import { generateAllocationPlans } from "../allocation/engine";
 import { decomposeLegYield } from "@/lib/math/yield";
-import { SafeMath, toDecimal, toPercentString } from "@/lib/math/decimal";
+import { toDecimal, toPercentString } from "@/lib/math/decimal";
 
 export interface RebalanceTriggerCheck {
   triggered: boolean;
@@ -33,17 +33,38 @@ export function detectRebalanceOpportunity(
   currentOpportunities: YieldOpportunity[],
   effectiveLiquidUsd?: string
 ): RebalanceProposal {
+  if (originalPlan.usdValuationStatus === "UNAVAILABLE") {
+    const unavailable = "UNAVAILABLE";
+    const reason = "USD valuation evidence is unavailable; dollar impact and allocation changes cannot be checked.";
+    return {
+      triggered: false,
+      checks: [],
+      primaryReason: reason,
+      marketDeltaSummary: reason,
+      originalExpectedReturnUsd: unavailable,
+      newExpectedReturnUsd: unavailable,
+      deltaReturnUsd: unavailable,
+      deltaReturnPct: unavailable,
+      proposedPlan: originalPlan,
+    };
+  }
+
   const checks: RebalanceTriggerCheck[] = [];
   let shouldTrigger = false;
 
   // Calculate degraded yield of current holdings under new market conditions
   let simulatedCurrentNetYield = toDecimal(0);
+  let simulatedNetYieldAvailable = true;
 
   // 1. Check APY drop on allocated products
   for (const leg of originalPlan.allocations) {
     const currentOpp = currentOpportunities.find((o) => o.id === leg.productId);
     if (!currentOpp) {
-      simulatedCurrentNetYield = simulatedCurrentNetYield.plus(toDecimal(leg.netYieldEstimateUsd));
+      if (leg.netYieldEstimateUsd === null) {
+        simulatedNetYieldAvailable = false;
+      } else {
+        simulatedCurrentNetYield = simulatedCurrentNetYield.plus(toDecimal(leg.netYieldEstimateUsd));
+      }
       continue;
     }
 
@@ -55,25 +76,23 @@ export function detectRebalanceOpportunity(
       currentOpp.estimatedEntryCostUsd,
       currentOpp.estimatedExitCostUsd
     );
-    simulatedCurrentNetYield = simulatedCurrentNetYield.plus(toDecimal(decomp.netYieldUsd));
+    if (decomp.netYieldUsd === null) {
+      simulatedNetYieldAvailable = false;
+    } else {
+      simulatedCurrentNetYield = simulatedCurrentNetYield.plus(toDecimal(decomp.netYieldUsd));
+    }
 
-    const originalApy = toDecimal(leg.totalApy);
-    const currentApy = toDecimal(currentOpp.totalApy);
+    const originalApy = toDecimal(leg.totalApy ?? leg.baseApy);
+    const currentApy = toDecimal(currentOpp.totalApy ?? currentOpp.baseApy);
 
-    // If APY dropped by more than 30% or by at least 1.5% absolute
-    const droppedAbs = originalApy.minus(currentApy);
-    const droppedPct = originalApy.gt(0)
-      ? droppedAbs.div(originalApy)
-      : toDecimal(0);
-
-    if (droppedPct.gte(0.30) || droppedAbs.gte(0.015)) {
+    if (currentApy.lt(originalApy)) {
       shouldTrigger = true;
       checks.push({
         triggered: true,
-        reason: `${leg.productName} 채굴 인센티브 또는 수익률 급감 (APY significantly decayed)`,
+        reason: `${leg.productName} recorded yield assumption is below its original value.`,
         originalMetric: toPercentString(originalApy.toString()),
         currentMetric: toPercentString(currentApy.toString()),
-        severity: "HIGH",
+        severity: currentApy.lte(0) ? "HIGH" : "MEDIUM",
       });
     }
   }
@@ -109,11 +128,17 @@ export function detectRebalanceOpportunity(
     .map((c) => `${c.reason} (${c.originalMetric} -> ${c.currentMetric})`)
     .join("; ");
 
-  const origReturn = toDecimal(originalPlan.expectedNetYieldUsd);
-  const newReturn = simulatedCurrentNetYield;
-  const deltaReturn = newReturn.minus(origReturn);
-  const deltaPct = origReturn.gt(0)
-    ? deltaReturn.div(origReturn).times(100).toFixed(1)
+  const origReturn = originalPlan.expectedNetYieldUsd === null
+    ? null
+    : toDecimal(originalPlan.expectedNetYieldUsd);
+  const newReturn = simulatedNetYieldAvailable ? simulatedCurrentNetYield : null;
+  const deltaReturn = origReturn !== null && newReturn !== null
+    ? newReturn.minus(origReturn)
+    : null;
+  // Use the magnitude as the denominator so a yield decline remains negative
+  // even when Compass policy cost estimates make the original net return < 0.
+  const deltaPct = origReturn !== null && deltaReturn !== null && !origReturn.isZero()
+    ? deltaReturn.div(origReturn.abs()).times(100).toFixed(1)
     : "0.0";
 
   return {
@@ -121,10 +146,10 @@ export function detectRebalanceOpportunity(
     checks,
     primaryReason,
     marketDeltaSummary: marketDeltaSummary || "시장 환경이 안정적인 허용 오차 내에서 유지 중입니다.",
-    originalExpectedReturnUsd: origReturn.toFixed(2),
-    newExpectedReturnUsd: newReturn.toFixed(2),
-    deltaReturnUsd: deltaReturn.toFixed(2),
-    deltaReturnPct: `${deltaReturn.gte(0) ? "+" : ""}${deltaPct}%`,
+    originalExpectedReturnUsd: origReturn?.toFixed(2) ?? "UNAVAILABLE",
+    newExpectedReturnUsd: newReturn?.toFixed(2) ?? "UNAVAILABLE",
+    deltaReturnUsd: deltaReturn?.toFixed(2) ?? "UNAVAILABLE",
+    deltaReturnPct: deltaReturn === null ? "UNAVAILABLE" : `${deltaReturn.gte(0) ? "+" : ""}${deltaPct}%`,
     proposedPlan,
   };
 }

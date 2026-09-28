@@ -10,32 +10,41 @@ import {
   RotateCcw,
   AlertTriangle,
   ArrowRight,
-  Sparkles,
   ShieldAlert,
   CheckCircle2,
-  TrendingDown,
   Info,
 } from "lucide-react";
-import { toPercentString } from "@/lib/math/decimal";
+import {
+  buildDecisionEvidence,
+  DecisionAssumption,
+  DecisionReceipt,
+  evaluateDecisionAssumptions,
+} from "@/domain/decision/receipt";
+import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
 
 interface ReplayMonitorProps {
   originalPlan: AllocationPlan | null;
   profile: NeedsProfile | null;
   liveOpportunities: YieldOpportunity[];
-  onApplyRebalance?: (newPlan: AllocationPlan) => void;
+  usddEvidence: UsddProtocolEvidence | null;
+  decisionReceipt: DecisionReceipt | null;
+  onAssumptionsEvaluated?: (title: string, assumptions: DecisionAssumption[], mode: "LIVE" | "SIMULATED") => void;
+  onApplyRebalance?: (newPlan: AllocationPlan, simulatedOpportunities: YieldOpportunity[], assumptions: DecisionAssumption[]) => void;
 }
 
 export function ReplayMonitor({
   originalPlan,
   profile,
   liveOpportunities,
+  usddEvidence,
+  decisionReceipt,
+  onAssumptionsEvaluated,
   onApplyRebalance,
 }: ReplayMonitorProps) {
   const [activeScenarioId, setActiveScenarioId] = useState<string | null>(null);
   const [simulatedOpps, setSimulatedOpps] = useState<YieldOpportunity[]>(liveOpportunities);
-  const [aiRebalanceAdvice, setAiRebalanceAdvice] = useState<string | null>(null);
-  const [isExplaining, setIsExplaining] = useState<boolean>(false);
-  const scenarioCacheRef = React.useRef<Record<string, string>>({});
+  const [simulatedLiquidUsd, setSimulatedLiquidUsd] = useState<string | undefined>(undefined);
+  const [reviewedAssumptions, setReviewedAssumptions] = useState<DecisionAssumption[]>(decisionReceipt?.assumptions ?? []);
 
   if (!originalPlan || !profile) {
     return (
@@ -49,53 +58,49 @@ export function ReplayMonitor({
   const proposal: RebalanceProposal = detectRebalanceOpportunity(
     originalPlan,
     profile,
-    simulatedOpps
+    simulatedOpps,
+    simulatedLiquidUsd
   );
 
-  const handleRunScenario = async (scenario: ReplayScenario) => {
+  const handleRunScenario = (scenario: ReplayScenario) => {
     setActiveScenarioId(scenario.id);
     const updated = scenario.simulatedMarketDelta(liveOpportunities);
     setSimulatedOpps(updated);
-
-    if (scenarioCacheRef.current[scenario.id]) {
-      setAiRebalanceAdvice(scenarioCacheRef.current[scenario.id]);
-      return;
-    }
-
-    setAiRebalanceAdvice(null);
-    setIsExplaining(true);
-
-    try {
-      const res = await fetch("/api/ai/explain", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "REBALANCE",
-          originalPlan,
-          triggerReason: scenario.expectedTriggerReason,
-          currentMarketChange: scenario.description,
-        }),
+    const liquid = scenario.id === "scenario-liquidity-shortfall"
+      ? Math.max(0, Number(profile?.minimumLiquidUsd ?? 0) - 1).toFixed(2)
+      : undefined;
+    setSimulatedLiquidUsd(liquid);
+    const now = new Date().toISOString();
+    const currentEvidence = buildDecisionEvidence(updated, usddEvidence, now);
+    if (liquid !== undefined) {
+      currentEvidence.push({
+        id: "simulated-liquid-reserve",
+        field: "plan.liquidReserveUsd",
+        value: liquid,
+        source: "TRON Compass replay input",
+        fetchedAt: now,
+        terms: "SIMULATED replay input representing a liquid reserve below the confirmed user rule.",
+        reality: "SIMULATED",
+        observedReality: "SIMULATED",
       });
-      const data = await res.json();
-      if (data.success && data.data) {
-        const advice = data.data.explanation + " " + data.data.actionAdvice;
-        scenarioCacheRef.current[scenario.id] = advice;
-        setAiRebalanceAdvice(advice);
-      }
-    } catch {
-      const fallback =
-        "시장 조건 변화에 따른 예상 APY 하락이 감지되었습니다. 원금 안전과 목표 유동성 유지를 위해 신규 조건 플랜으로 리밸런싱을 권고합니다.";
-      scenarioCacheRef.current[scenario.id] = fallback;
-      setAiRebalanceAdvice(fallback);
-    } finally {
-      setIsExplaining(false);
     }
+    const checked = decisionReceipt
+      ? evaluateDecisionAssumptions(decisionReceipt.assumptions, currentEvidence, now)
+      : [];
+    setReviewedAssumptions(checked);
+    onAssumptionsEvaluated?.(scenario.title, checked, "SIMULATED");
   };
 
   const handleResetToLive = () => {
     setActiveScenarioId(null);
     setSimulatedOpps(liveOpportunities);
-    setAiRebalanceAdvice(null);
+    setSimulatedLiquidUsd(undefined);
+    const now = new Date().toISOString();
+    const checked = decisionReceipt
+      ? evaluateDecisionAssumptions(decisionReceipt.assumptions, buildDecisionEvidence(liveOpportunities, usddEvidence, now), now)
+      : [];
+    setReviewedAssumptions(checked);
+    onAssumptionsEvaluated?.("Current market evidence", checked, "LIVE");
   };
 
   return (
@@ -113,7 +118,7 @@ export function ReplayMonitor({
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            시간 경과나 급격한 시장 변동 시 포트폴리오를 재조정(리밸런싱)하는 모의 시뮬레이터입니다.
+            기록된 결정의 전제가 유지되는지 확인하고, 실패 시 동일 규칙으로 제안을 검사합니다.
           </p>
         </div>
 
@@ -123,7 +128,7 @@ export function ReplayMonitor({
             className="text-xs px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 flex items-center gap-1.5 font-semibold transition-colors cursor-pointer"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>실시간 메인넷 데이터로 복귀</span>
+            <span>Current market evidence</span>
           </button>
         )}
       </div>
@@ -141,22 +146,32 @@ export function ReplayMonitor({
         <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-1">
           <span className="text-slate-400 block text-[11px] font-medium">최초 수립 시점 기대 APY</span>
           <div className="text-2xl font-extrabold font-mono text-slate-900">
-            {originalPlan.effectiveNetApy}
+            {originalPlan.usdValuationStatus === "UNAVAILABLE"
+              ? "UNAVAILABLE"
+              : originalPlan.effectiveNetApy === null
+                ? "UNAVAILABLE · incentive APY"
+                : `${originalPlan.usdValuationStatus === "SIMULATED" ? "SIMULATED · " : ""}${originalPlan.effectiveNetApy}`}
           </div>
           <span className="text-xs text-slate-500 block">
-            순 예상 수익: +${originalPlan.expectedNetYieldUsd} ({originalPlan.horizonDays}일)
+            {originalPlan.usdValuationStatus === "UNAVAILABLE"
+              ? "USD valuation evidence is missing; return impact cannot be calculated."
+              : originalPlan.expectedNetYieldUsd === null
+                ? "Net return is unavailable because source-backed incentive APY is unknown."
+                : `${originalPlan.usdValuationStatus === "SIMULATED" ? "SIMULATED · " : ""}순 예상 수익: +$${originalPlan.expectedNetYieldUsd} (${originalPlan.horizonDays}일)`}
           </span>
         </div>
 
         <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-1">
           <span className="text-slate-400 block text-[11px] font-medium">
-            {activeScenarioId ? "시뮬레이션 환경 상태" : "실시간 환경 상태"}
+            {activeScenarioId ? "SIMULATED OUTCOME" : "Current evidence"}
           </span>
-          <div className={`text-2xl font-extrabold font-mono ${proposal.triggered ? "text-amber-600" : "text-emerald-600"}`}>
-            {proposal.triggered ? "조건 변화 감지됨" : "목표 충족 중 (정상)"}
+            <div className={`text-2xl font-extrabold font-mono ${proposal.triggered ? "text-amber-600" : originalPlan.usdValuationStatus === "UNAVAILABLE" ? "text-slate-600" : "text-emerald-600"}`}>
+            {proposal.triggered ? "조건 변화 감지됨" : originalPlan.usdValuationStatus === "UNAVAILABLE" || originalPlan.effectiveNetApy === null ? "평가 불가 · UNKNOWN" : "평가 근거 내 변화 없음"}
           </div>
           <span className="text-xs text-slate-500 block truncate">
-            {proposal.marketDeltaSummary}
+            {originalPlan.effectiveNetApy === null && !proposal.triggered
+              ? "Incentive APY evidence is unavailable; return assumptions cannot be compared."
+              : proposal.marketDeltaSummary}
           </span>
         </div>
 
@@ -176,7 +191,7 @@ export function ReplayMonitor({
             )}
           </div>
           <span className="text-xs text-slate-400 block">
-            {proposal.triggered ? "조건 재배분 권고" : "목표 범위 내 안정 운용"}
+            {proposal.triggered ? "조건 재배분 제안" : originalPlan.usdValuationStatus === "UNAVAILABLE" ? "USD impact and allocation cannot be checked" : originalPlan.effectiveNetApy === null ? "Incentive APY is unknown; no yield comparison is available" : "No trigger found in recorded evidence"}
           </span>
         </div>
       </div>
@@ -227,7 +242,7 @@ export function ReplayMonitor({
               </div>
               <div>
                 <h3 className="text-base sm:text-lg font-extrabold text-amber-950">
-                  시장 상황이 바뀌었어요
+                  An assumption behind this decision changed
                 </h3>
                 <span className="text-xs text-amber-800 font-medium">
                   원인: {proposal.primaryReason}
@@ -247,7 +262,7 @@ export function ReplayMonitor({
                 기존 예상 순수익 ({originalPlan.horizonDays}일)
               </span>
               <div className="text-xl font-extrabold font-mono text-slate-800">
-                +${proposal.originalExpectedReturnUsd}
+                {proposal.originalExpectedReturnUsd === "UNAVAILABLE" ? "UNAVAILABLE" : `$${proposal.originalExpectedReturnUsd}`}
               </div>
               <span className="text-[10px] text-slate-400">초기 시장 조건 기준</span>
             </div>
@@ -257,9 +272,9 @@ export function ReplayMonitor({
                 시장 변동 후 예상 수익
               </span>
               <div className="text-xl font-extrabold font-mono text-amber-700">
-                +${proposal.newExpectedReturnUsd}
+                {proposal.newExpectedReturnUsd === "UNAVAILABLE" ? "UNAVAILABLE" : `$${proposal.newExpectedReturnUsd}`}
               </div>
-              <span className="text-[10px] text-amber-600 font-semibold">인센티브 소멸 반영</span>
+              <span className="text-[10px] text-amber-600 font-semibold">SIMULATED OUTCOME · not a forecast</span>
             </div>
 
             <div className="p-4 rounded-2xl bg-amber-100/70 border border-amber-300 space-y-1">
@@ -269,24 +284,23 @@ export function ReplayMonitor({
               <div className="text-2xl font-black font-mono text-rose-600 flex items-center gap-1">
                 <span>{proposal.deltaReturnPct}</span>
                 <span className="text-xs font-semibold text-rose-500">
-                  (${proposal.deltaReturnUsd})
+                  {proposal.deltaReturnUsd === "UNAVAILABLE" ? "" : `($${proposal.deltaReturnUsd})`}
                 </span>
               </div>
               <span className="text-[10px] text-amber-800 font-medium">리밸런싱 트리거 충족</span>
             </div>
           </div>
 
-          {/* AI Explanation of Rebalance */}
+          {/* Deterministic explanation grounded in the recorded replay inputs */}
           <div className="p-4 rounded-2xl bg-white border border-amber-200/70 text-xs text-slate-700 leading-relaxed space-y-1.5 shadow-2xs">
             <div className="flex items-center gap-1.5 text-amber-800 font-bold">
-              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-              <span>AI 리밸런싱 진단 및 대응 권고:</span>
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
+              <span>Recorded assumption review:</span>
             </div>
             <p className="text-slate-600 leading-relaxed">
-              {isExplaining
-                ? "AI 권고사항 생성 중..."
-                : aiRebalanceAdvice ||
-                  "기존 포지션의 USDD 채굴 인센티브 보상 소멸로 인해 기대 수익률이 30% 이상 급감했습니다. 수익성이 저하된 자산을 회수하고, 현재 안정적 수익을 제공하는 대체 마켓으로 재배분하는 것이 유리합니다."}
+              {reviewedAssumptions.filter((item) => item.status === "FAIL").length
+                ? reviewedAssumptions.filter((item) => item.status === "FAIL").map((item) => `${item.id}: ${item.reason ?? item.description}`).join(" · ")
+                : "The recorded inputs do not show a failed assumption in this review. Any proposed plan remains subject to My Rules and user approval."}
             </p>
           </div>
 
@@ -312,10 +326,10 @@ export function ReplayMonitor({
 
               {onApplyRebalance && (
                 <button
-                  onClick={() => onApplyRebalance(proposal.proposedPlan)}
+                  onClick={() => onApplyRebalance(proposal.proposedPlan, simulatedOpps, reviewedAssumptions)}
                   className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-2xs transition-all active:scale-[0.98] cursor-pointer"
                 >
-                  <span>새 플랜 채택 및 전환</span>
+                  <span>검토 제안을 자식 영수증으로 기록</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
               )}

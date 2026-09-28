@@ -1,5 +1,6 @@
 import { ExtractedProfile, PlanExplanation } from "./schemas";
 import { NeedsProfile, AllocationPlan } from "@/domain/allocation/types";
+import { extractGroundedHoldings } from "./grounding";
 
 export interface LLMProvider {
   extractNeeds(input: {
@@ -44,30 +45,8 @@ export class MockLLMProvider implements LLMProvider {
   }> {
     const text = input.userInput.toLowerCase();
 
-    // 1. Detect holdings
-    const holdings: Array<{ asset: string; amount: string; estimatedUsd?: string }> = [];
-
-    // Check for USDD
-    const usddMatch = text.match(/([0-9,]+(?:\.[0-9]+)?)\s*(?:usdd|usd)/);
-    if (usddMatch) {
-      const amount = usddMatch[1].replace(/,/g, "");
-      holdings.push({ asset: "USDD", amount, estimatedUsd: amount });
-    } else if (input.walletHoldings?.some((h) => h.asset === "USDD")) {
-      const w = input.walletHoldings.find((h) => h.asset === "USDD")!;
-      holdings.push({ asset: "USDD", amount: w.amount, estimatedUsd: w.amount });
-    } else {
-      holdings.push({ asset: "USDD", amount: "1000", estimatedUsd: "1000" });
-    }
-
-    // Check for TRX
-    const trxMatch = text.match(/([0-9,]+(?:\.[0-9]+)?)\s*(?:trx)/);
-    if (trxMatch) {
-      const amount = trxMatch[1].replace(/,/g, "");
-      const usdVal = (parseFloat(amount) * 0.25).toFixed(2);
-      holdings.push({ asset: "TRX", amount, estimatedUsd: usdVal });
-    } else if (text.includes("trx") || input.walletHoldings?.some((h) => h.asset === "TRX")) {
-      holdings.push({ asset: "TRX", amount: "2000", estimatedUsd: "500" });
-    }
+    // Balances come from explicit user quantities or a wallet read, never a model default.
+    const holdings = extractGroundedHoldings(input.userInput, input.walletHoldings);
 
     // 2. Horizon
     let horizonDays = 90;
@@ -104,16 +83,21 @@ export class MockLLMProvider implements LLMProvider {
     }
 
     const missingFields: string[] = [];
+    if (!holdings.length) missingFields.push("보유 자산 수량");
     if (!horizonMatch) {
       missingFields.push("투자기간 (예: 90일)");
     }
 
     const needsClarification = missingFields.length > 0;
-    const followUpQuestion = needsClarification
-      ? "희망하시는 목표 투자 기간(예: 30일, 90일, 180일)을 선택하시거나 말씀해 주시면 더욱 정밀한 수익률을 계산해 드립니다."
-      : undefined;
+    const followUpQuestion = missingFields.includes("보유 자산 수량")
+      ? "보유하신 자산과 수량을 알려주세요. 예: 1,000 USDD 또는 2,000 TRX."
+      : !horizonMatch
+        ? "희망하시는 목표 투자 기간(예: 30일, 90일, 180일)을 말씀해 주세요."
+        : undefined;
 
-    const summary = `총 ${holdings.map((h) => `${h.amount} ${h.asset}`).join(" 및 ")} 자산을 기반으로 ${horizonDays}일 동안 운용하며, 최소 $${minimumLiquidUsd}의 상시 유동성을 보존하는 ${riskLevel} 위험 수준의 플랜을 구성했습니다.`;
+    const summary = holdings.length
+      ? `기록된 ${holdings.map((h) => `${h.amount} ${h.asset}`).join(" 및 ")} 수량을 바탕으로 ${horizonDays}일 운용 목표와 유동성 규칙 초안을 정리했습니다.`
+      : "자산 수량이 확인되지 않아 배분 계산을 만들지 않았습니다.";
 
     let protectionClause: string | undefined = undefined;
     if (text.includes("여행") || text.includes("남겨") || text.includes("비상금")) {
@@ -131,7 +115,7 @@ export class MockLLMProvider implements LLMProvider {
       missingFields,
       assumptions: [
         `투자 기간 ${horizonDays}일 기준 복리 수익 추정`,
-        `최소 유동성 $${minimumLiquidUsd} 확보 보장`,
+        `최소 유동성 규칙 초안: $${minimumLiquidUsd}`,
       ],
     };
 
@@ -149,32 +133,35 @@ export class MockLLMProvider implements LLMProvider {
     plans: AllocationPlan[];
   }): Promise<PlanExplanation & { provider: "mock_fallback" }> {
     const [planA, planB] = input.plans;
-    const planALiquid = planA?.liquidReserveUsd || input.profile.minimumLiquidUsd || "300";
-    const planBLiquid = planB?.liquidReserveUsd || input.profile.minimumLiquidUsd || "300";
-
-    const volatileLegA = planA?.allocations.find((a) => a.asset === "TRX");
-    const planAVolatile = volatileLegA ? (parseFloat(volatileLegA.allocationPct) * 100).toFixed(1) : "3.3";
-
-    const volatileLegB = planB?.allocations.find((a) => a.asset === "TRX");
-    const planBVolatile = volatileLegB ? (parseFloat(volatileLegB.allocationPct) * 100).toFixed(1) : "13.3";
+    const explain = (plan?: AllocationPlan) => {
+      if (!plan) return "No deterministic plan is available.";
+      if (plan.usdValuationStatus === "UNAVAILABLE") {
+        return "USD valuation evidence is unavailable. No allocation or dollar return is produced.";
+      }
+      const failedRules = plan.constraintChecks.filter((check) => !check.passed).map((check) => check.name);
+      if (failedRules.length) return `This option fails recorded checks: ${failedRules.join(", ")}. It is not eligible for execution.`;
+      const incentiveYield = plan.expectedIncentiveYieldUsd === null
+        ? "UNAVAILABLE"
+        : `$${plan.expectedIncentiveYieldUsd}`;
+      const netYield = plan.expectedNetYieldUsd === null
+        ? "UNAVAILABLE because source-backed incentive APY is missing"
+        : `$${plan.expectedNetYieldUsd}`;
+      return `${plan.label}: ${plan.allocations.length} recorded allocation(s); estimated base yield $${plan.expectedBaseYieldUsd}, incentive yield ${incentiveYield}, estimated costs $${plan.estimatedTotalCostUsd}, and net yield ${netYield} over ${plan.horizonDays} days. These are estimates, not guarantees.`;
+    };
 
     return {
       planAHighlights: [
-        `상시 유동성 $${planALiquid} 즉시 인출 보존 (${planA?.liquidReservePct || "50%"})`,
-        `변동성 자산(TRX) 노출을 ${planAVolatile}%로 엄격히 제한`,
-        "락업 없는 JustLend 코어 풀 공급으로 원금 손실 위험 차단",
-        "보수적 리스크 성향에 맞춘 최적의 방어형 자본 배분",
+        explain(planA),
+        "Rule checks are produced by the deterministic evaluator.",
       ],
       planBHighlights: [
-        `필수 유동성 $${planBLiquid} 상시 확보 후 자본 가동률 극대화`,
-        `변동성 자산 노출을 ${planBVolatile}% 이내로 안전하게 제어`,
-        "JustLend 및 USDD 인센티브 마이닝 복합 배분으로 연수익 극대화",
-        `약정 기간(${input.profile.horizonDays}일) 동안 안정적 복리 수익 누적 추구`,
+        explain(planB),
+        "Unavailable incentive rewards are not included as sourced yield.",
       ],
-      recommendationSummary: `단기 자금 인출 가능성이 있다면 유동성 방어 중심의 ${planA?.label || "Plan A"}를, 약정 기간(${input.profile.horizonDays}일) 동안 수익 극대화를 원하신다면 ${planB?.label || "Plan B"}를 추천합니다.`,
-      planAExplanation: `${planA?.label || "플랜 A"}는 요청하신 유동성 ($${input.profile.minimumLiquidUsd})을 초과하여 ${planA?.liquidReservePct || "50%"}의 자산을 즉시 인출 가능한 상태로 유지하며, 검증된 JustLend 코어 풀을 통해 원금 손실 위험을 최소화합니다.`,
-      planBExplanation: `${planB?.label || "플랜 B"}는 하드 제약조건을 엄격히 준수하면서 남은 여유 자본을 USDD 생태계 인센티브 마이닝 및 jTRX 대출 풀에 최대 배분하여 예상 순수익을 극대화합니다.`,
-      comparisonRecommendation: `단기 자금 인출 가능성이 있다면 유동성 방어 중심의 ${planA?.label || "Plan A"}를, 약정 기간(${input.profile.horizonDays}일) 동안 안정적인 수익 누적을 원하신다면 ${planB?.label || "Plan B"}를 추천합니다.`,
+      recommendationSummary: "Compare the deterministic rule checks and source-backed market evidence before selecting an option. No option guarantees principal, yield, or withdrawal timing.",
+      planAExplanation: explain(planA),
+      planBExplanation: explain(planB),
+      comparisonRecommendation: "AI explains the recorded results. The deterministic evaluator controls allocations and My Rules checks.",
       provider: "mock_fallback" as const,
     };
   }
@@ -189,8 +176,8 @@ export class MockLLMProvider implements LLMProvider {
     provider: "mock_fallback";
   }> {
     return {
-      explanation: `초기 계획 수립 시점 대비 ${input.triggerReason} 요인이 감지되었습니다. (${input.currentMarketChange}) 이로 인해 기존 플랜의 예상 기대 수익률이 하락하고 유동성 조건이 변경되었습니다.`,
-      actionAdvice: `현재 수익률이 저하된 포지션을 안전하게 상환(Redeem)하고, 더 높은 안정성과 인센티브를 제공하는 JustLend 신규 풀로 자산을 재배분하는 리밸런싱을 권장합니다.`,
+      explanation: `기록된 결정 가정이 바뀌었는지 다시 확인합니다. ${input.triggerReason} ${input.currentMarketChange} 이 검토는 제안이며, 실제 시장 변화나 실행 결과를 뜻하지 않습니다.`,
+      actionAdvice: "제안이 만들어지면 같은 My Rules 검사와 별도 사용자 승인이 필요합니다. 자동 거래는 하지 않습니다.",
       provider: "mock_fallback" as const,
     };
   }
