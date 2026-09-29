@@ -19,6 +19,7 @@ import {
   Zap,
 } from "lucide-react";
 import { toPercentString } from "@/lib/math/decimal";
+import { classifyPlanExecutability, describePlanExecutability } from "@/domain/allocation/executability";
 
 interface PlanComparisonProps {
   plans: AllocationPlan[];
@@ -105,6 +106,7 @@ export function PlanComparison({
           const isDiagnosticsOpen = !!expandedDiagnostics[plan.id];
 
           const planFriendlyName = isLiquidityFirst ? "안정형 (Safe)" : "수익형 (Balanced)";
+          const planExecutability = classifyPlanExecutability(plan.allocations);
           const planOneLineSummary = isLiquidityFirst
             ? "Recorded evidence and reserve rules shape this option."
             : "Recorded evidence and exposure limits shape this option.";
@@ -168,6 +170,9 @@ export function PlanComparison({
                   <p className="text-xs text-slate-500 leading-relaxed">
                     {planOneLineSummary}
                   </p>
+                  <span className={`inline-flex rounded-md border px-2 py-1 text-[10px] font-semibold ${planExecutability === "FULLY_NILE_EXECUTABLE" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : planExecutability === "PARTIALLY_NILE_EXECUTABLE" ? "border-purple-200 bg-purple-50 text-purple-800" : "border-slate-200 bg-slate-100 text-slate-700"}`}>
+                    {describePlanExecutability(planExecutability)}
+                  </span>
                   {plan.valuationStatus && plan.valuationStatus !== "SOURCE_BACKED" && (
                     <span className={`inline-flex text-[10px] font-bold px-2 py-1 rounded-md border ${plan.valuationStatus === "SIMULATED" ? "bg-amber-50 text-amber-800 border-amber-200" : plan.valuationStatus === "SNAPSHOT" ? "bg-blue-50 text-blue-800 border-blue-200" : "bg-slate-100 text-slate-700 border-slate-200"}`}>
                       {plan.valuationStatus === "SIMULATED" ? "SIMULATED · demo valuation" : plan.valuationStatus === "SNAPSHOT" ? "SNAPSHOT valuation" : "Live USDT-equivalent valuation UNAVAILABLE"}
@@ -289,11 +294,11 @@ export function PlanComparison({
                           )}
                           {leg.executabilityClass === "NILE_EXECUTABLE" ? (
                             <span className="text-[10px] text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded font-bold">
-                              Nile 직접 실행 가능
+                              NILE EXECUTABLE
                             </span>
                           ) : (
                             <span className="text-[10px] text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded font-medium">
-                              메인넷 분석 전용
+                              LIVE DATA ONLY
                             </span>
                           )}
                         </div>

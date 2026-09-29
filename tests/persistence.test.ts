@@ -9,6 +9,7 @@ describe("Decision Receipt persistence", () => {
       id: "persisted-receipt-1",
       parentId: null,
       createdAt: "2026-09-28T00:00:00.000Z",
+      horizonDays: 90,
       rules: { version: 1, items: [] },
       needsConfirmedAt: null,
       evidence: [],

@@ -99,7 +99,7 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
     });
 
     expect(gate.ready).toBe(false);
-    expect(gate.stops.some((stop: any) => stop.guardId === "HOLDING_VALUATION_MISSING" && stop.reason === "Live valuation unavailable — execution paused.")).toBe(true);
+    expect(gate.stops.some((stop: any) => stop.guardId === "LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE")).toBe(true);
   });
 
   it("allows execution valuation evidence only when the complete USDT-equivalent valuation is fresh", () => {
@@ -140,8 +140,115 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
     const mislabeled = makeGate({ asset: "TRX", amount: "100", value: "25", denomination: "USD", source: JUSTLEND_VALUATION_SOURCE, fetchedAt: new Date(now).toISOString(), reality: "LIVE_MAINNET", stale: false });
     for (const gate of [stale, mislabeled]) {
       expect(gate.ready).toBe(false);
-      expect(gate.stops.some((stop: any) => stop.reason === "Live valuation unavailable — execution paused.")).toBe(true);
+      expect(gate.stops.some((stop: any) => stop.guardId === "LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE")).toBe(true);
     }
+  });
+
+  it("allows a risk-reducing Redeem with stale hypothetical Mainnet valuation and market evidence", () => {
+    const now = Date.parse("2026-09-29T00:00:00.000Z");
+    const preview = {
+      actionType: "REDEEM",
+      amount: "100",
+      amountRaw: "10000000000",
+      network: "NILE",
+      targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58,
+      method: "redeem(uint256)",
+      estimatedFeeTrx: "15-25 TRX",
+      riskNotice: "Nile testnet",
+      approvalScope: "Redeem 100 jTRX",
+    } as const;
+    const gate = (transaction as any).evaluateNileExecutionSafety({
+      network: "Nile Testnet",
+      leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
+      preview,
+      approvedPreview: preview,
+      approvalShown: true,
+      evidence: [{ fetchedAt: null, reality: "SNAPSHOT" }],
+      valuationEvidence: [{
+        holding: { asset: "TRX", amount: "2000", origin: "USER_DECLARED" },
+        valuation: {
+          asset: "TRX", amount: "2000", value: "UNAVAILABLE", denomination: "USDT",
+          source: JUSTLEND_VALUATION_SOURCE, fetchedAt: null, reality: "UNAVAILABLE", stale: true,
+        },
+      }],
+      rulesPassed: true,
+      now,
+    });
+
+    expect(gate.ready).toBe(true);
+  });
+
+  it("keeps Redeem approval and confirmed rules mandatory despite the stale-market exception", () => {
+    const preview = {
+      actionType: "REDEEM", amount: "100", amountRaw: "10000000000", network: "NILE",
+      targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58,
+      method: "redeem(uint256)", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile testnet",
+      approvalScope: "Redeem 100 jTRX",
+    } as const;
+    const base = {
+      network: "Nile Testnet",
+      leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
+      preview,
+      evidence: [],
+      valuationEvidence: [],
+      now: Date.parse("2026-09-29T00:00:00.000Z"),
+    };
+    const noApproval = (transaction as any).evaluateNileExecutionSafety({ ...base, approvalShown: false, rulesPassed: true });
+    const unconfirmed = (transaction as any).evaluateNileExecutionSafety({ ...base, approvedPreview: preview, approvalShown: true, rulesPassed: false, ruleViolation: { ruleId: "RULES_UNCONFIRMED", actual: "unconfirmed", required: "confirmed My Rules" } });
+
+    expect(noApproval.stops.some((stop: any) => stop.guardId === "APPROVAL_NOT_RECORDED")).toBe(true);
+    expect(unconfirmed.stops.some((stop: any) => stop.guardId === "INVESTMENT_RULES")).toBe(true);
+  });
+
+  it("still rejects Redeem when network, allowlisted contract, method, or exact amount fails", () => {
+    const preview = {
+      actionType: "REDEEM", amount: "100", amountRaw: "10000000000", network: "NILE",
+      targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58,
+      method: "redeem(uint256)", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile testnet",
+      approvalScope: "Redeem 100 jTRX",
+    } as const;
+    const base = {
+      network: "Nile Testnet",
+      leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
+      preview,
+      approvedPreview: preview,
+      approvalShown: true,
+      evidence: [],
+      valuationEvidence: [],
+      rulesPassed: true,
+      now: Date.parse("2026-09-29T00:00:00.000Z"),
+    };
+    const wrongNetwork = (transaction as any).evaluateNileExecutionSafety({ ...base, network: "TRON Mainnet" });
+    const wrongContract = (transaction as any).evaluateNileExecutionSafety({ ...base, preview: { ...preview, targetContract: "TWrongContract" } });
+    const wrongMethod = (transaction as any).evaluateNileExecutionSafety({ ...base, preview: { ...preview, method: "mint()" } });
+    const invalidAmount = (transaction as any).evaluateNileExecutionSafety({ ...base, preview: { ...preview, amount: "0.000000001", amountRaw: "0" } });
+
+    expect(wrongNetwork.stops.some((stop: any) => stop.guardId === "NETWORK_NILE")).toBe(true);
+    expect(wrongContract.stops.some((stop: any) => stop.guardId === "CONTRACT_NOT_ALLOWLISTED")).toBe(true);
+    expect(wrongMethod.stops.some((stop: any) => stop.guardId === "METHOD_NOT_ALLOWED")).toBe(true);
+    expect(invalidAmount.stops.some((stop: any) => stop.guardId === "AMOUNT_INVALID")).toBe(true);
+  });
+
+  it("keeps Supply fail-closed when the required planning valuation is stale", () => {
+    const now = Date.parse("2026-09-29T00:00:00.000Z");
+    const preview = {
+      actionType: "SUPPLY", amount: "1", amountRaw: "1000000", network: "NILE",
+      targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58, method: "mint()",
+      estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile testnet", approvalScope: "Supply 1 TRX",
+    } as const;
+    const gate = (transaction as any).evaluateNileExecutionSafety({
+      network: "Nile Testnet", leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
+      preview, approvedPreview: preview, approvalShown: true,
+      evidence: [{ fetchedAt: new Date(now).toISOString(), reality: "LIVE_MAINNET" }],
+      valuationEvidence: [{ holding: { asset: "TRX", amount: "100" }, valuation: {
+        asset: "TRX", amount: "100", value: "25", denomination: "USDT", source: JUSTLEND_VALUATION_SOURCE,
+        fetchedAt: new Date(now - 6 * 60 * 1000).toISOString(), reality: "LIVE_MAINNET", stale: false,
+      } }],
+      rulesPassed: true, now,
+    });
+
+    expect(gate.ready).toBe(false);
+    expect(gate.stops.some((stop: any) => stop.guardId === "LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE" && stop.reason.includes("LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE"))).toBe(true);
   });
 
   it("stops when the transaction fields changed after the user saw approval", () => {
@@ -522,6 +629,20 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
     expect(feeCheck?.passed).toBe(false);
   });
 
+  it("fails Redeem preflight when the wallet is connected to Mainnet instead of Nile", () => {
+    const result = buildRedeemPreflightChecks({
+      isWalletConnected: true,
+      walletAddress: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+      currentNetwork: "TRON Mainnet",
+      trxBalanceForFee: "35",
+      jTrxBalance: "100",
+      requiredJTrxAmount: "50",
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.checks.find((check) => check.key === "NETWORK_NILE")?.passed).toBe(false);
+  });
+
   it("rejects zero, negative, malformed and over-precision redeem amounts", () => {
     for (const amount of ["0", "-1", "not-a-number", "1e2", "0.000000001"]) {
       const result = buildRedeemPreflightChecks({
@@ -535,6 +656,19 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
       expect(result.ready, amount).toBe(false);
       expect(result.checks.find((check) => check.key === "AMOUNT_VALID")?.passed, amount).toBe(false);
     }
+  });
+
+  it("short-circuits balance validation when Redeem precision is invalid", () => {
+    const result = buildRedeemPreflightChecks({
+      isWalletConnected: true,
+      walletAddress: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+      currentNetwork: "nile",
+      trxBalanceForFee: "20",
+      jTrxBalance: "100",
+      requiredJTrxAmount: "0.000000001",
+    });
+
+    expect(result.checks.map((check) => check.key)).toEqual(["WALLET_CONNECTED", "NETWORK_NILE", "AMOUNT_VALID"]);
   });
 
   it("allows redeeming the exact jTRX balance but blocks requests above it", () => {

@@ -28,19 +28,20 @@ export interface UsddProtocolEvidence {
   reality?: EvidenceReality;
 }
 
-export async function fetchUsddEvidence(): Promise<UsddProtocolEvidence> {
+export async function fetchUsddEvidence(options: { forceRefresh?: boolean } = {}): Promise<UsddProtocolEvidence> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 5000);
 
   try {
+    const requestCache = options.forceRefresh ? { cache: "no-store" as const } : { next: { revalidate: 60 } };
     const [overviewRes, collateralRes] = await Promise.all([
       fetch(USDD_OVERVIEW_URL, {
         signal: controller.signal,
-        next: { revalidate: 60 },
+        ...requestCache,
       }),
       fetch(USDD_COLLATERAL_URL, {
         signal: controller.signal,
-        next: { revalidate: 60 },
+        ...requestCache,
       }),
     ]);
 

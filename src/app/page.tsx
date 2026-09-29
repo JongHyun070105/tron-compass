@@ -18,6 +18,7 @@ import {
   YieldOpportunity,
 } from "@/domain/allocation/types";
 import { generateAllocationPlans, computeTotalCapitalValue } from "@/domain/allocation/engine";
+import { classifyPlanExecutability } from "@/domain/allocation/executability";
 import { hasCompleteValuation, valueUserDeclaredHoldings } from "@/domain/allocation/valuation";
 import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
 import { compassStorage } from "@/lib/persistence/storage";
@@ -160,7 +161,7 @@ export default function HomePage() {
     try {
       const [justlendRes, usddRes] = await Promise.all([
         fetch(`/api/market/justlend${forceRefresh ? "?refresh=true" : ""}`),
-        fetch("/api/market/usdd"),
+        fetch(`/api/market/usdd${forceRefresh ? "?refresh=true" : ""}`),
       ]);
 
       const justlendData = await justlendRes.json();
@@ -195,6 +196,27 @@ export default function HomePage() {
     } finally {
       setIsLoadingMarket(false);
     }
+  };
+
+  const refreshExecutionEvidence = async () => {
+    const [justlendRes, usddRes] = await Promise.all([
+      fetch("/api/market/justlend?refresh=true", { cache: "no-store" }),
+      fetch("/api/market/usdd?refresh=true", { cache: "no-store" }),
+    ]);
+    if (!justlendRes.ok || !usddRes.ok) {
+      throw new Error("LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE: Mainnet evidence refresh failed.");
+    }
+    const [justlendData, usddData] = await Promise.all([justlendRes.json(), usddRes.json()]);
+    if (!justlendData.success || !Array.isArray(justlendData.markets) || !usddData.success || !usddData.data) {
+      throw new Error("LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE: refreshed Mainnet evidence is incomplete.");
+    }
+
+    const refreshedOpportunities = justlendData.markets as YieldOpportunity[];
+    const refreshedUsddEvidence = usddData.data as UsddProtocolEvidence;
+    setOpportunities(refreshedOpportunities);
+    setUsddEvidence(refreshedUsddEvidence);
+    if (typeof justlendData.fetchedAt === "string") setLastFetchedAt(justlendData.fetchedAt);
+    return { opportunities: refreshedOpportunities, usddEvidence: refreshedUsddEvidence };
   };
 
   useEffect(() => {
@@ -534,9 +556,7 @@ export default function HomePage() {
       exitCondition: candidate.exitConditions,
       risks: candidate.risks,
       ruleEvaluation: candidate.constraintChecks,
-      executionReality: candidate.allocations.some((leg) => leg.executabilityClass === "NILE_EXECUTABLE")
-        ? "NILE_EXECUTABLE" as const
-        : candidate.allocations.length ? "LIVE_DATA_ONLY" as const : "UNAVAILABLE" as const,
+      executionReality: classifyPlanExecutability(candidate.allocations),
     }));
     if (!alternatives.some((item) => item.planId === plan.id)) {
       alternatives.push({
@@ -549,13 +569,14 @@ export default function HomePage() {
         exitCondition: plan.exitConditions,
         risks: plan.risks,
         ruleEvaluation: plan.constraintChecks,
-        executionReality: plan.allocations.some((leg) => leg.executabilityClass === "NILE_EXECUTABLE") ? "NILE_EXECUTABLE" : plan.allocations.length ? "LIVE_DATA_ONLY" : "UNAVAILABLE",
+        executionReality: classifyPlanExecutability(plan.allocations),
       });
     }
     const draft = {
       id: `receipt-${Date.now()}`,
       parentId: parent?.id ?? null,
       createdAt: now,
+      horizonDays: decisionProfile.horizonDays,
       rules: { version: Math.max(0, ...rules.map((rule) => rule.version)), items: rules },
       needsConfirmedAt: rules.length ? rules.reduce((latest, rule) => rule.confirmedAt > latest ? rule.confirmedAt : latest, "") : null,
       evidence: buildDecisionEvidence(evidenceOpportunities, usddEvidence, now, decisionProfile),
@@ -853,6 +874,7 @@ export default function HomePage() {
         decisionReceipt={activeReceipt}
         onDecisionReceiptUpdate={saveReceipt}
         refreshWalletState={refreshWalletState}
+        refreshExecutionEvidence={refreshExecutionEvidence}
         onExecutionCompleted={(hash) => {
           console.log("Transaction executed on Nile:", hash);
           setCurrentStep(5); // Move to post-execution monitoring

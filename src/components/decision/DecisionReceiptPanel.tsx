@@ -4,6 +4,7 @@ import React from "react";
 import { CheckCircle2, FileCheck2, ShieldAlert } from "lucide-react";
 import { DecisionAlternative, DecisionReceipt } from "@/domain/decision/receipt";
 import { Decimal, toPercentString } from "@/lib/math/decimal";
+import { describeLegacyPlanExecutability } from "@/domain/allocation/executability";
 import { formatReceiptAmount as humanAmount, getReceiptBalanceStatus as balanceStatus, receiptAssetIds, selectReceiptEvidence } from "@/domain/decision/receipt-presentation";
 
 interface DecisionReceiptPanelProps {
@@ -56,7 +57,7 @@ function compactAlternative(option: DecisionAlternative, selected: boolean, rese
     <article key={option.planId} className={`rounded-2xl border p-4 ${selected ? "border-indigo-200 bg-indigo-50/60" : "border-slate-200 bg-white"}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h4 className="text-sm font-bold text-slate-900">{selected ? "Selected plan" : "Alternative considered"} · {option.planId}</h4>
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{option.executionReality.replaceAll("_", " ")}</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{describeLegacyPlanExecutability(option.executionReality)}</span>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-4">
         <div><span className="block text-slate-500">Expected net</span><b className="text-slate-900">{expectedNet(option)} USDT-eq</b></div>
@@ -94,9 +95,7 @@ export function DecisionReceiptPanel({ receipt }: DecisionReceiptPanelProps) {
   const uniqueQuotes = [...new Set(receipt.rules.items.map((rule) => rule.sourceQuote).filter((quote): quote is string => !!quote))];
   const reserveRule = receipt.rules.items.find((rule) => rule.type === "MINIMUM_LIQUIDITY");
   const reserve = reserveRule ? humanAmount(reserveRule.value) : "Unavailable";
-  const horizon = selected?.exitCondition.map((condition) => condition.match(/(\d+)\s*days?/i)?.[1]).find(Boolean)
-    ? `${selected.exitCondition.map((condition) => condition.match(/(\d+)\s*days?/i)?.[1]).find(Boolean)} days`
-    : "Not recorded";
+  const horizon = receipt.horizonDays ? `${receipt.horizonDays} days` : "Not recorded";
   const included = [...new Map(receipt.screening.included.map((item) => [item.opportunityId, item])).values()];
   const excluded = [...new Map(receipt.screening.excluded.map((item) => [item.opportunityId, item])).values()];
   const balanceEvidenceStatus = balanceStatus(receipt);
@@ -118,6 +117,7 @@ export function DecisionReceiptPanel({ receipt }: DecisionReceiptPanelProps) {
               {receipt.parentId && <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">CHILD OF #{receipt.parentId.slice(-6)}</span>}
             </div>
             <p className="mt-1 text-xs text-slate-500">Frozen {new Date(receipt.createdAt).toLocaleString()}</p>
+            <p className="text-xs text-slate-500">Investment horizon: <strong className="text-slate-700">{horizon}</strong></p>
           </div>
         </div>
         <div className="rounded-xl bg-slate-50 px-3 py-2">

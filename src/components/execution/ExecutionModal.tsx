@@ -5,6 +5,14 @@ import { AllocationPlan, AllocationLeg } from "@/domain/allocation/types";
 import { NeedsProfile, YieldOpportunity } from "@/domain/allocation/types";
 import { evaluateDecisionRules } from "@/domain/allocation/rules";
 import { computeTotalCapitalValue } from "@/domain/allocation/engine";
+import {
+  buildExecutionEvidenceContext,
+  executionMarketEvidenceIsFresh,
+  getPreSignExecutionEvidence,
+  executionRiskDirection,
+  ExecutionEvidenceRefreshResult,
+} from "@/domain/allocation/execution-context";
+import { hasFreshMainnetValuation } from "@/domain/allocation/valuation";
 import { DecisionReceipt, DecisionStopRecord, makeStopRecord, refreshDecisionReceiptIntegrity } from "@/domain/decision/receipt";
 import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
 import { detectActiveTronNetwork, estimateNileJTrxRedeemTrx } from "@/lib/tron/network";
@@ -25,6 +33,7 @@ import {
   executeIfNileGatePasses,
 } from "@/lib/tron/transaction";
 import { getWalletTronWeb } from "@/lib/tron/tronlink-provider";
+import { JUSTLEND_NILE_CONTRACTS } from "@/lib/integrations/justlend/contracts";
 import { compassStorage } from "@/lib/persistence/storage";
 import { Decimal, formatUnits, toDecimal } from "@/lib/math/decimal";
 import {
@@ -60,6 +69,7 @@ interface ExecutionModalProps {
   initialMode?: "SUPPLY" | "REDEEM";
   onExecutionCompleted?: (txHash: string) => void;
   refreshWalletState: (options?: { forceFresh?: boolean; clearStale?: boolean }) => Promise<WalletBalanceSnapshot | null>;
+  refreshExecutionEvidence: () => Promise<ExecutionEvidenceRefreshResult>;
   profile: NeedsProfile;
   opportunities: YieldOpportunity[];
   usddEvidence: UsddProtocolEvidence | null;
@@ -87,6 +97,7 @@ export function ExecutionModal({
   onDecisionReceiptUpdate,
   onExecutionCompleted,
   refreshWalletState,
+  refreshExecutionEvidence,
 }: ExecutionModalProps) {
   const [actionMode, setActionMode] = useState<"SUPPLY" | "REDEEM">(initialMode);
   const [supplyAmount, setSupplyAmount] = useState<string>("50");
@@ -100,6 +111,7 @@ export function ExecutionModal({
   const receiptRef = useRef<DecisionReceipt | null>(decisionReceipt);
   const [exchangeRateRaw, setExchangeRateRaw] = useState<string | null>(null);
   const [balanceRefreshState, setBalanceRefreshState] = useState<"IDLE" | "FETCHING" | "READY" | "FAILED">("IDLE");
+  const [isRefreshingExecutionEvidence, setIsRefreshingExecutionEvidence] = useState(false);
   const walletSnapshotRef = useRef<WalletBalanceSnapshot | null>(null);
   const liveTrxBalance = isDemoMode ? "500.00" : trxBalance;
   const liveJTrxBalance = isDemoMode ? "250.00" : jTrxBalance;
@@ -225,7 +237,7 @@ export function ExecutionModal({
         setLifecycleState("PREFLIGHT_FAILED");
       } else if (hasAuthorized && approvedPreview) {
         setLifecycleState("READY_TO_SIGN");
-        setStatusMessage("서명 준비 완료: [트랜잭션 승인 및 서명] 버튼을 눌러 진행해 주세요.");
+        setStatusMessage("명시적 동의가 기록되었습니다. TronLink 요청은 모든 사전 실행 안전 검사를 통과한 뒤에만 열립니다.");
       } else {
         setLifecycleState("REVIEW");
         setStatusMessage("실행 조건을 검토하신 후 동의 체크박스를 선택해 주세요.");
@@ -333,6 +345,46 @@ export function ExecutionModal({
     const frozenRules = decisionReceipt?.rules.items ?? profile.investmentRules ?? [];
     const confirmed = !!decisionReceipt?.needsConfirmedAt && frozenRules.length > 0;
     const frozenProfile: NeedsProfile = { ...profile, investmentRules: frozenRules };
+    const riskDirection = executionRiskDirection(actionMode);
+    let currentOpportunities = opportunities;
+    let currentUsddEvidence = usddEvidence;
+
+    if (riskDirection === "INCREASE_EXPOSURE") {
+      setIsRefreshingExecutionEvidence(true);
+      setStatusMessage("Refreshing authoritative JustLend and USDD Mainnet evidence before the Supply safety check…");
+      try {
+        const refreshed = await getPreSignExecutionEvidence(actionMode, {
+          opportunities: currentOpportunities,
+          usddEvidence: currentUsddEvidence,
+        }, refreshExecutionEvidence);
+        currentOpportunities = refreshed.opportunities;
+        currentUsddEvidence = refreshed.usddEvidence;
+      } catch (error) {
+        const reason = error instanceof Error && error.message.includes("LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE")
+          ? error.message
+          : "LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE: authoritative Mainnet evidence refresh failed.";
+        const stop = makeStopRecord({
+          timestamp: new Date().toISOString(),
+          stage: "PRE_SIGN",
+          ruleId: null,
+          guardId: "LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE",
+          attemptedAction: actionMode,
+          attemptedAmount: `${preview.amount} ${preview.asset}`,
+          reason,
+        });
+        setLifecycleState("STOPPED");
+        setStatusMessage(`STOPPED · ${reason}`);
+        setIsRefreshingExecutionEvidence(false);
+        if (decisionReceipt) await persistReceipt({
+          ...decisionReceipt,
+          approval: { shown: approvalShown, signer: walletAddress || null, approvedAt: now },
+          stops: [...decisionReceipt.stops, stop],
+        });
+        return;
+      }
+      setIsRefreshingExecutionEvidence(false);
+    }
+
     let candidateAllocations = [...plan.allocations];
     let resizedAmountHasUsdtEquivalentValue = actionMode !== "SUPPLY";
     if (actionMode === "SUPPLY") {
@@ -353,38 +405,31 @@ export function ExecutionModal({
         resizedAmountHasUsdtEquivalentValue = false;
       }
     }
-    const ruleResult = confirmed && resizedAmountHasUsdtEquivalentValue
-      ? evaluateDecisionRules(frozenProfile, computeTotalCapitalValue(frozenProfile), candidateAllocations, opportunities)
-      : { passed: false, checks: [] };
+    const evidenceContext = buildExecutionEvidenceContext({
+      plan,
+      profile: frozenProfile,
+      opportunities: currentOpportunities,
+      usddEvidence: currentUsddEvidence,
+      now: Date.now(),
+    });
+    const executionProfile = evidenceContext.profile;
+    const ruleResult = actionMode === "REDEEM"
+      ? { passed: confirmed, checks: [] }
+      : confirmed && resizedAmountHasUsdtEquivalentValue
+        ? evaluateDecisionRules(executionProfile, computeTotalCapitalValue(executionProfile), candidateAllocations, currentOpportunities)
+        : { passed: false, checks: [] };
     const failedRule = ruleResult.checks.find((item) => !item.passed);
     const rawRequired = failedRule?.required.replace(/^[<>]=?\s*/, "") ?? "confirmed My Rules";
-    const ruleViolation = confirmed
-      ? failedRule
+    const finalRuleViolation = !confirmed
+      ? { ruleId: "RULES_UNCONFIRMED", actual: "unconfirmed", required: "confirmed My Rules" }
+      : failedRule
         ? { ruleId: failedRule.ruleId ?? failedRule.key, actual: failedRule.actual, required: rawRequired, reason: failedRule.detail }
-        : undefined
-      : { ruleId: "RULES_UNCONFIRMED", actual: "unconfirmed", required: "confirmed My Rules" };
-    const finalRuleViolation = resizedAmountHasUsdtEquivalentValue
-      ? ruleViolation
-      : { ruleId: "VALUATION_UNAVAILABLE", actual: "UNKNOWN", required: "source-backed USDT-equivalent valuation" };
-
-    const planIds = new Set(plan.allocations.map((item) => item.productId));
-    const requiredMarketEvidence = opportunities
-      .filter((item) => planIds.has(item.id))
-      .flatMap((item) => [
-        { fetchedAt: item.fetchedAt, reality: item.reality },
-        {
-          fetchedAt: item.incentiveFetchedAt ?? null,
-          reality: item.incentiveReality ?? "SNAPSHOT",
-        },
-      ]);
-    if (plan.allocations.some((item) => item.asset === "USDD")) {
-      requiredMarketEvidence.push({
-        fetchedAt: usddEvidence?.fetchedAt ?? null,
-        reality: usddEvidence?.reality ?? "SNAPSHOT",
-      });
-    }
-    const valuationEvidence = frozenProfile.holdings
-      .map((holding) => ({ holding, valuation: holding.valuation }));
+        : !resizedAmountHasUsdtEquivalentValue
+          ? { ruleId: "VALUATION_UNAVAILABLE", actual: "UNKNOWN", required: "source-backed USDT-equivalent valuation" }
+          : undefined;
+    const requiredMarketEvidence = evidenceContext.marketEvidence;
+    const valuationEvidence = evidenceContext.valuationEvidence;
+    const rulesPassed = confirmed && (actionMode === "REDEEM" || ruleResult.passed);
 
     const tronWeb = getWalletTronWeb();
     const activeNetwork = detectActiveTronNetwork(tronWeb).name;
@@ -396,7 +441,7 @@ export function ExecutionModal({
       approvalShown: hasAuthorized && !!approvedPreview,
       evidence: requiredMarketEvidence,
       valuationEvidence,
-      rulesPassed: confirmed && ruleResult.passed,
+      rulesPassed,
       ruleViolation: finalRuleViolation,
       now: Date.now(),
     });
@@ -431,7 +476,7 @@ export function ExecutionModal({
         approvalShown: hasAuthorized && !!approvedPreview,
         evidence: requiredMarketEvidence,
         valuationEvidence,
-        rulesPassed: confirmed && ruleResult.passed,
+        rulesPassed,
         ruleViolation: finalRuleViolation,
         now: Date.now(),
       });
@@ -507,7 +552,22 @@ export function ExecutionModal({
         setStatusMessage("TronLink user rejected the request. No confirmed transaction was recorded.");
         if (decisionReceipt) await persistReceipt({
           ...decisionReceipt,
-          execution: { ...decisionReceipt.execution, result: "FAILED" },
+          execution: {
+            ...decisionReceipt.execution,
+            network: null,
+            contract: null,
+            method: null,
+            callValue: null,
+            amountAsset: null,
+            amount: null,
+            amountRaw: null,
+            txHash: null,
+            blockNumber: null,
+            contractResult: null,
+            result: "PREPARED",
+            balanceAction: null,
+            balanceEvidenceStatus: undefined,
+          },
         });
         return;
       }
@@ -654,6 +714,21 @@ export function ExecutionModal({
   };
 
   const currentStepNum = getStepStatus();
+  const previewEvidenceContext = buildExecutionEvidenceContext({
+    plan,
+    profile,
+    opportunities,
+    usddEvidence,
+  });
+  const marketContextFresh = executionMarketEvidenceIsFresh(previewEvidenceContext.marketEvidence) &&
+    hasFreshMainnetValuation(previewEvidenceContext.profile, Date.now());
+  const hasConfirmedRules = !!decisionReceipt?.needsConfirmedAt &&
+    (decisionReceipt.rules.items.length > 0 || (profile.investmentRules?.length ?? 0) > 0);
+  const redeemExecutionSafetyPass = actionMode === "REDEEM" && !isDemoMode && preflight.ready &&
+    leg.executabilityClass === "NILE_EXECUTABLE" && leg.executionNetwork === "NILE" &&
+    preview.targetContract === JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58 &&
+    preview.method === "redeem(uint256)" && hasConfirmedRules && hasAuthorized &&
+    approvedPreview?.amountRaw === preview.amountRaw && approvedPreview?.amount === preview.amount;
   const estimatedRedeemTrx = actionMode === "REDEEM" && exchangeRateRaw
     ? estimateNileJTrxRedeemTrx(redeemAmount, exchangeRateRaw)
     : null;
@@ -701,7 +776,7 @@ export function ExecutionModal({
                   setActionMode("SUPPLY");
                 }
               }}
-              disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED", "SIMULATED"].includes(lifecycleState)}
+              disabled={isRefreshingExecutionEvidence || ["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED", "SIMULATED"].includes(lifecycleState)}
               className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 actionMode === "SUPPLY"
                   ? "bg-white text-slate-900 shadow-2xs"
@@ -720,7 +795,7 @@ export function ExecutionModal({
                   setActionMode("REDEEM");
                 }
               }}
-              disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED", "SIMULATED"].includes(lifecycleState)}
+              disabled={isRefreshingExecutionEvidence || ["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED", "SIMULATED"].includes(lifecycleState)}
               className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 actionMode === "REDEEM"
                   ? "bg-white text-slate-900 shadow-2xs"
@@ -771,6 +846,18 @@ export function ExecutionModal({
 
         {/* Modal Body */}
         <div className="p-6 space-y-5 overflow-y-auto flex-1">
+          {actionMode === "REDEEM" && !isDemoMode && (
+            <section aria-label="Redeem safety status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] space-y-1.5">
+              <div className="flex items-center justify-between gap-2"><strong className="text-slate-800">MARKET CONTEXT</strong><span className="font-bold text-amber-800">{marketContextFresh ? "CURRENT" : "STALE / UNAVAILABLE"}</span></div>
+              <p className="text-slate-600">Reality: NILE LIVE execution.</p>
+              <p className="text-slate-600">DECISION SNAPSHOT AT {decisionReceipt?.createdAt ? new Date(decisionReceipt.createdAt).toLocaleTimeString() : "unavailable"} · LIVE EVIDENCE FETCHED AT {previewEvidenceContext.liveEvidenceFetchedAt ? new Date(previewEvidenceContext.liveEvidenceFetchedAt).toLocaleTimeString() : "unavailable"} · WALLET STATE FETCHED AT {walletSnapshotRef.current?.fetchedAt ? new Date(walletSnapshotRef.current.fetchedAt).toLocaleTimeString() : "unavailable"}.</p>
+              {!marketContextFresh && <p className="text-amber-900">{redeemExecutionSafetyPass
+                ? "Current market valuation is unavailable. This exit reduces the existing Nile test position and can still be submitted after your approval."
+                : "Current market valuation is unavailable. Stale market pricing alone does not block an exit; complete the required safety checks before requesting wallet approval."}</p>}
+              {!hasConfirmedRules && <p className="text-amber-900">My Rules are not confirmed. Confirm the displayed rules before opening the wallet request.</p>}
+              <div className="flex items-center justify-between gap-2 border-t border-amber-200 pt-1.5"><strong className="text-slate-800">EXECUTION SAFETY</strong><span className={`font-bold ${redeemExecutionSafetyPass ? "text-emerald-700" : "text-slate-600"}`}>{redeemExecutionSafetyPass ? "PASS" : "REVIEW REQUIRED"}</span></div>
+            </section>
+          )}
           {/* Action Overview Box */}
           <div className="rounded-2xl bg-slate-50 border border-slate-200/90 p-5 space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-200/80">
@@ -844,7 +931,7 @@ export function ExecutionModal({
               <div className="flex items-center gap-2">
                 <input
                   type="number"
-                  disabled={["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED", "SIMULATED"].includes(lifecycleState)}
+                  disabled={isRefreshingExecutionEvidence || ["AWAITING_WALLET_SIGNATURE", "BROADCASTING", "CONFIRMING", "CONFIRMED", "SIMULATED"].includes(lifecycleState)}
                   value={actionMode === "SUPPLY" ? supplyAmount : redeemAmount}
                   onChange={(e) => {
                     setHasAuthorized(false);
@@ -1054,6 +1141,19 @@ export function ExecutionModal({
               {lifecycleState === "CONFIRMED" ? <CheckCircle2 className="w-4 h-4" /> : <Info className="w-4 h-4" />}
               <span>{lifecycleState === "CONFIRMED" ? "TronGrid confirmed" : "Close simulation"}</span>
             </button>
+          ) : lifecycleState === "REJECTED" ? (
+            <button
+              onClick={() => {
+                setHasAuthorized(false);
+                setApprovedPreview(null);
+                setLifecycleState("REVIEW");
+                setStatusMessage("Request rejected in TronLink. Review the parameters and consent again before retrying.");
+              }}
+              className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs px-6 py-3 rounded-xl flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+            >
+              <ArrowDownLeft className="w-4 h-4" />
+              <span>Review and retry</span>
+            </button>
           ) : (
             <button
               onClick={handleExecute}
@@ -1061,7 +1161,9 @@ export function ExecutionModal({
                 lifecycleState !== "READY_TO_SIGN" ||
                 !hasAuthorized ||
                 !preflight.ready ||
-                isInsufficientFunds
+                isRefreshingExecutionEvidence ||
+                isInsufficientFunds ||
+                (actionMode === "REDEEM" && !isDemoMode && !redeemExecutionSafetyPass)
               }
               className="bg-slate-900 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-xs px-6 py-3 rounded-xl flex items-center gap-2 shadow-xs transition-all active:scale-[0.98] cursor-pointer"
             >

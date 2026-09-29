@@ -5,6 +5,7 @@ const draft = {
   id: "receipt-1",
   parentId: null,
   createdAt: "2026-09-28T00:00:00.000Z",
+  horizonDays: 90,
   rules: { version: 1, items: [] },
   needsConfirmedAt: "2026-09-27T23:00:00.000Z",
   evidence: [],
@@ -26,6 +27,12 @@ describe("Decision Receipt", () => {
 
     expect(created.integrity.decisionHash).toMatch(/^[a-f0-9]{64}$/);
     expect(await (receipt as any).verifyDecisionHash(txEnriched)).toBe(true);
+  });
+
+  it("freezes the confirmed investment horizon into the receipt integrity snapshot", async () => {
+    const created = await receipt.createDecisionReceipt(draft);
+    expect(created.horizonDays).toBe(90);
+    expect(await receipt.verifyDecisionHash({ ...created, horizonDays: 60 })).toBe(false);
   });
 
   it("rechecks a market-backed assumption from PASS to FAIL using frozen thresholds", () => {

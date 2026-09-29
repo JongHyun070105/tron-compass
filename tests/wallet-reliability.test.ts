@@ -64,6 +64,7 @@ describe("transaction balance evidence", () => {
     const base = await createDecisionReceipt({
       id: "receipt-legacy-balance",
       createdAt: "2026-09-29T00:00:00.000Z",
+      horizonDays: 90,
       rules: { version: 1, items: [] },
       needsConfirmedAt: null,
       evidence: [],
@@ -156,6 +157,7 @@ describe("shared wallet state and compact receipt presentation", () => {
     const receipt = await createDecisionReceipt({
       id: "receipt-compact",
       createdAt: "2026-09-29T00:00:00.000Z",
+      horizonDays: 90,
       rules: { version: 1, items: [] },
       needsConfirmedAt: null,
       evidence,

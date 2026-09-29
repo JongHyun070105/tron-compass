@@ -4,6 +4,7 @@ import { AllocationLeg, AssetValuation, Holding } from "@/domain/allocation/type
 import { DecisionEvidenceItem, DecisionStopRecord, makeStopRecord } from "@/domain/decision/receipt";
 import { detectActiveTronNetwork } from "./network";
 import { getWalletTronWeb } from "./tronlink-provider";
+import { ExecutionActionType, executionRiskDirection } from "@/domain/allocation/execution-context";
 
 const JUSTLEND_VALUATION_SOURCE = "https://openapi.just.network/lend/jtoken";
 
@@ -135,65 +136,64 @@ export function evaluateNileExecutionSafety(params: {
     }
   }
 
-  const marketEvidence = params.evidence;
-  if (!marketEvidence.length) {
-    addStop("MARKET_EVIDENCE_MISSING", "Required market evidence is unavailable.");
-  } else {
-    for (const item of marketEvidence) {
-      const fetchedAt = item.fetchedAt ? Date.parse(item.fetchedAt) : Number.NaN;
-      const fresh = Number.isFinite(fetchedAt) && now >= fetchedAt && now - fetchedAt <= (params.freshnessMs ?? 5 * 60 * 1000);
-      if (item.reality !== "LIVE_MAINNET" || !fresh) {
-        addStop("MARKET_EVIDENCE_STALE", "Required evidence is UNKNOWN / STALE; refresh market evidence before signing.");
-        break;
+  const riskDirection = params.preview.actionType
+    ? executionRiskDirection(params.preview.actionType as ExecutionActionType)
+    : "INCREASE_EXPOSURE";
+
+  if (riskDirection === "INCREASE_EXPOSURE") {
+    const marketEvidence = params.evidence;
+    if (!marketEvidence.length) {
+      addStop("MARKET_EVIDENCE_MISSING", "Required market evidence is unavailable.");
+    } else {
+      for (const item of marketEvidence) {
+        const fetchedAt = item.fetchedAt ? Date.parse(item.fetchedAt) : Number.NaN;
+        const fresh = Number.isFinite(fetchedAt) && now >= fetchedAt && now - fetchedAt <= (params.freshnessMs ?? 5 * 60 * 1000);
+        if (item.reality !== "LIVE_MAINNET" || !fresh) {
+          addStop("MARKET_EVIDENCE_STALE", "Required evidence is UNKNOWN / STALE; refresh market evidence before signing.");
+          break;
+        }
       }
     }
-  }
 
-  const valuationEvidence = params.valuationEvidence ?? [];
-  if (!valuationEvidence.length) {
-    addStop("HOLDING_VALUATION_MISSING", "Live valuation unavailable — execution paused.");
-  } else {
-    const hasInvalidValuation = valuationEvidence.some(({ holding, valuation }) => {
-      let amount: Decimal;
-      try {
-        amount = new Decimal(holding.amount);
-      } catch {
-        return true;
-      }
-      if (!amount.isFinite() || amount.isNegative()) return true;
-      if (amount.isZero()) return false;
-      if (!valuation) return true;
+    const valuationEvidence = params.valuationEvidence ?? [];
+    if (!valuationEvidence.length) {
+      addStop("LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE", "LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE: refresh source-backed holding valuations before increasing exposure.");
+    } else {
+      const hasInvalidValuation = valuationEvidence.some(({ holding, valuation }) => {
+        let amount: Decimal;
+        try {
+          amount = new Decimal(holding.amount);
+        } catch {
+          return true;
+        }
+        if (!amount.isFinite() || amount.isNegative()) return true;
+        if (amount.isZero()) return false;
+        if (!valuation) return true;
 
-      let valuationAmount: Decimal;
-      let value: Decimal;
-      try {
-        valuationAmount = new Decimal(valuation.amount);
-        value = new Decimal(valuation.value ?? "NaN");
-      } catch {
-        return true;
-      }
-      const fetchedAt = valuation.fetchedAt ? Date.parse(valuation.fetchedAt) : Number.NaN;
-      const fresh = Number.isFinite(fetchedAt) && now >= fetchedAt && now - fetchedAt <= (params.freshnessMs ?? 5 * 60 * 1000);
-      return valuation.asset !== holding.asset ||
-        !valuationAmount.isFinite() ||
-        !valuationAmount.eq(amount) ||
-        !value.isFinite() ||
-        !value.gt(0) ||
-        valuation.denomination !== "USDT" ||
-        valuation.source !== JUSTLEND_VALUATION_SOURCE ||
-        valuation.reality !== "LIVE_MAINNET" ||
-        valuation.stale !== false ||
-        !fresh;
-    });
-    if (hasInvalidValuation) {
-      const missing = valuationEvidence.some(({ valuation }) => !valuation);
-      const stale = valuationEvidence.some(({ valuation }) => {
-        if (!valuation) return false;
-        const fetchedAt = valuation?.fetchedAt ? Date.parse(valuation.fetchedAt) : Number.NaN;
-        return valuation?.reality !== "LIVE_MAINNET" || valuation.stale !== false ||
-          !Number.isFinite(fetchedAt) || now < fetchedAt || now - fetchedAt > (params.freshnessMs ?? 5 * 60 * 1000);
+        let valuationAmount: Decimal;
+        let value: Decimal;
+        try {
+          valuationAmount = new Decimal(valuation.amount);
+          value = new Decimal(valuation.value ?? "NaN");
+        } catch {
+          return true;
+        }
+        const fetchedAt = valuation.fetchedAt ? Date.parse(valuation.fetchedAt) : Number.NaN;
+        const fresh = Number.isFinite(fetchedAt) && now >= fetchedAt && now - fetchedAt <= (params.freshnessMs ?? 5 * 60 * 1000);
+        return valuation.asset !== holding.asset ||
+          !valuationAmount.isFinite() ||
+          !valuationAmount.eq(amount) ||
+          !value.isFinite() ||
+          !value.gt(0) ||
+          valuation.denomination !== "USDT" ||
+          valuation.source !== JUSTLEND_VALUATION_SOURCE ||
+          valuation.reality !== "LIVE_MAINNET" ||
+          valuation.stale !== false ||
+          !fresh;
       });
-      addStop(missing ? "HOLDING_VALUATION_MISSING" : stale ? "HOLDING_VALUATION_STALE" : "HOLDING_VALUATION_INVALID", "Live valuation unavailable — execution paused.");
+      if (hasInvalidValuation) {
+        addStop("LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE", "LIVE_VALUATION_REQUIRED_FOR_NEW_EXPOSURE: refresh source-backed holding valuations before increasing exposure.");
+      }
     }
   }
 
@@ -408,9 +408,16 @@ export function buildRedeemPreflightChecks(params: {
       ? "jTRX amount is positive and exactly representable with 8 decimals."
       : "Enter a positive jTRX amount with no more than 8 decimal places.",
   });
-  if (!amountValid) ready = false;
+  if (!amountValid) {
+    return {
+      ready: false,
+      checks,
+      requiredTotalTrx: "20.00",
+      currentBalanceTrx: "UNAVAILABLE",
+    };
+  }
 
-  const hasTokens = hasWallet && amountValid && jTrxBalanceKnown && jTrxBal.gt(0) && jTrxBal.gte(required);
+  const hasTokens = hasWallet && jTrxBalanceKnown && jTrxBal.gt(0) && jTrxBal.gte(required);
   checks.push({
     key: "BALANCE_SUFFICIENT",
     name: "Sufficient jTRX Position",

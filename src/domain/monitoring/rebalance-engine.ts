@@ -5,14 +5,25 @@ import {
 } from "../allocation/types";
 import { generateAllocationPlans } from "../allocation/engine";
 import { decomposeLegYield } from "@/lib/math/yield";
-import { toDecimal, toPercentString } from "@/lib/math/decimal";
+import { toDecimal } from "@/lib/math/decimal";
 
 export interface RebalanceTriggerCheck {
   triggered: boolean;
   reason: string;
   originalMetric: string;
   currentMetric: string;
+  metricLabel?: string;
   severity: "LOW" | "MEDIUM" | "HIGH";
+}
+
+function formatPercentTransition(before: string, after: string): [string, string] {
+  const beforePct = toDecimal(before).times(100);
+  const afterPct = toDecimal(after).times(100);
+  let precision = 2;
+  while (precision < 10 && beforePct.toFixed(precision) === afterPct.toFixed(precision)) {
+    precision += 1;
+  }
+  return [`${beforePct.toFixed(precision)}%`, `${afterPct.toFixed(precision)}%`];
 }
 
 export interface RebalanceProposal {
@@ -87,11 +98,13 @@ export function detectRebalanceOpportunity(
 
     if (currentApy.lt(originalApy)) {
       shouldTrigger = true;
+      const [originalBaseApy, currentBaseApy] = formatPercentTransition(leg.baseApy, currentOpp.baseApy);
       checks.push({
         triggered: true,
         reason: `${leg.productName} recorded yield assumption is below its original value.`,
-        originalMetric: toPercentString(originalApy.toString()),
-        currentMetric: toPercentString(currentApy.toString()),
+        originalMetric: originalBaseApy,
+        currentMetric: currentBaseApy,
+        metricLabel: "Base APY",
         severity: currentApy.lte(0) ? "HIGH" : "MEDIUM",
       });
     }
@@ -125,7 +138,7 @@ export function detectRebalanceOpportunity(
     : "리밸런싱 불필요: 현재 포지션이 목표 수익률 및 안전 조건을 충실히 유지하고 있습니다.";
 
   const marketDeltaSummary = checks
-    .map((c) => `${c.reason} (${c.originalMetric} -> ${c.currentMetric})`)
+    .map((c) => `${c.reason} (${c.metricLabel ? `${c.metricLabel} ` : ""}${c.originalMetric} -> ${c.currentMetric})`)
     .join("; ");
 
   const origReturn = originalPlan.expectedNetYieldUsdtEquivalent === null

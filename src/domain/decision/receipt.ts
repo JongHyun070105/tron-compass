@@ -3,6 +3,7 @@ import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
 import { getRuleForType } from "@/domain/allocation/rules";
 import { USDD_POLICY_THRESHOLDS } from "@/domain/allocation/usdd-signals";
 import { hasFreshMainnetValuation } from "@/domain/allocation/valuation";
+import { PlanExecutabilityClass } from "@/domain/allocation/executability";
 
 export type AssumptionStatus = "PASS" | "WARNING" | "FAIL" | "UNKNOWN";
 export type AssumptionThresholdProvenance = "OFFICIAL" | "COMPASS_POLICY" | "USER_DEFINED" | "MARKET_SNAPSHOT";
@@ -48,7 +49,7 @@ export interface DecisionAlternative {
   exitCondition: string[];
   risks: string[];
   ruleEvaluation: AllocationPlan["constraintChecks"];
-  executionReality: "NILE_EXECUTABLE" | "LIVE_DATA_ONLY" | "UNAVAILABLE";
+  executionReality: PlanExecutabilityClass | "NILE_EXECUTABLE" | "LIVE_DATA_ONLY" | "UNAVAILABLE";
 }
 
 export interface ApprovalShown {
@@ -86,6 +87,7 @@ export interface DecisionReceiptDraft {
   id: string;
   parentId?: string | null;
   createdAt: string;
+  horizonDays: number | null;
   rules: { version: number; items: InvestmentRule[] };
   needsConfirmedAt: string | null;
   evidence: DecisionEvidenceItem[];
@@ -150,6 +152,7 @@ export function canonicalizeDecisionJson(value: unknown): string {
 
 function hashPayload(receipt: DecisionReceipt | DecisionReceiptDraft) {
   return {
+    horizonDays: receipt.horizonDays,
     rules: receipt.rules,
     evidence: receipt.evidence,
     screening: receipt.screening,

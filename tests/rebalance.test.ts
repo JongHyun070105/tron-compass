@@ -79,6 +79,32 @@ describe("Historical Replay & Rebalance Engine", () => {
     expect(proposal.proposedPlan.constraintChecks.every((c) => c.passed)).toBe(true);
   });
 
+  it("shows the changed base APY at enough precision when incentive yield masks the total-rate change", () => {
+    const tinyRatePlan = {
+      ...originalPlan,
+      allocations: [{
+        ...originalPlan.allocations[0],
+        productId: "tiny-market",
+        baseApy: "0.000009",
+        totalApy: "0.039009",
+      }],
+      expectedNetYieldUsdtEquivalent: "1.00",
+    };
+    const current = [{
+      ...initialOpps[0],
+      id: "tiny-market",
+      asset: tinyRatePlan.allocations[0].asset,
+      baseApy: "0.000005",
+      incentiveApy: "0.039",
+      totalApy: "0.039005",
+    }];
+    const proposal = detectRebalanceOpportunity(tinyRatePlan, sampleProfile, current);
+
+    expect(proposal.triggered).toBe(true);
+    expect(proposal.marketDeltaSummary).toContain("0.0009% -> 0.0005%");
+    expect(proposal.marketDeltaSummary).not.toContain("0.00% -> 0.00%");
+  });
+
   it("keeps replay return impact unavailable when the original incentive source was missing", () => {
     const unknownOpportunities = normalizeJustLendMarketList(
       JUSTLEND_FALLBACK_FIXTURE.data.tokenList as RawJustLendToken[]

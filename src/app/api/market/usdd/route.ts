@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { fetchUsddEvidence } from "@/lib/integrations/usdd/client";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const forceRefresh = new URL(request.url).searchParams.get("refresh") === "true";
   try {
-    const evidence = await fetchUsddEvidence();
+    const evidence = await fetchUsddEvidence({ forceRefresh });
     return NextResponse.json({
       success: true,
       data: evidence,
