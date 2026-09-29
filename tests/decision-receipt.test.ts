@@ -63,4 +63,41 @@ describe("Decision Receipt", () => {
 
     expect(child.parentId).toBe(parent.id);
   });
+
+  it("freezes evidence as SNAPSHOT while preserving USER_DECLARED and LIVE_MAINNET realities", () => {
+    const evidence = (receipt as any).buildDecisionEvidence([], null, "2026-09-29T00:00:00.000Z", {
+      holdings: [{
+        asset: "TRX",
+        amount: "10",
+        origin: "USER_DECLARED",
+        valuation: {
+          asset: "TRX",
+          amount: "10",
+          value: "4",
+          denomination: "USDT",
+          source: "https://openapi.just.network/lend/jtoken",
+          fetchedAt: "2026-09-29T00:00:00.000Z",
+          reality: "LIVE_MAINNET",
+          stale: false,
+        },
+      }, {
+        asset: "jTRX",
+        amount: "5",
+        origin: "NILE_LIVE",
+      }],
+      horizonDays: 1,
+      minimumLiquidUsdtEquivalent: "0",
+      riskLevel: "LOW",
+      maxVolatileExposurePct: "1",
+      goal: "BALANCED",
+      missingFields: [],
+      assumptions: [],
+    });
+    const userInput = evidence.find((item: any) => item.field === "portfolio.holdings.TRX.origin");
+    const nileInput = evidence.find((item: any) => item.field === "portfolio.holdings.jTRX.origin");
+    const price = evidence.find((item: any) => item.field === "portfolio.holdings.TRX.usdtEquivalentValue");
+    expect(userInput).toMatchObject({ reality: "SNAPSHOT", observedReality: "USER_DECLARED" });
+    expect(nileInput).toMatchObject({ reality: "SNAPSHOT", observedReality: "NILE_LIVE" });
+    expect(price).toMatchObject({ reality: "SNAPSHOT", observedReality: "LIVE_MAINNET", value: "4" });
+  });
 });

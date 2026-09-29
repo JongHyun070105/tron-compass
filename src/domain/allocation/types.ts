@@ -7,14 +7,26 @@ export type ExecutabilityClass =
   | "SIMULATABLE"
   | "UNSUPPORTED_FOR_EXECUTION";
 
-export type EvidenceReality = "LIVE_MAINNET" | "NILE_LIVE" | "SNAPSHOT" | "SIMULATED";
+export type EvidenceReality =
+  | "LIVE_MAINNET"
+  | "NILE_LIVE"
+  | "SNAPSHOT"
+  | "SIMULATED"
+  | "USER_DECLARED"
+  | "UNAVAILABLE";
 
-export interface HoldingUsdValuation {
-  valueUsd: string;
+export type HoldingOrigin = "USER_DECLARED" | "NILE_LIVE" | "SIMULATED";
+
+export interface AssetValuation {
+  asset: string;
+  amount: string;
+  value?: string;
+  denomination: "TRX" | "USDT" | "USD";
   source: string;
   fetchedAt: string | null;
   reality: EvidenceReality;
-  terms?: string;
+  derivation?: string;
+  stale: boolean;
 }
 
 export type InvestmentRuleType =
@@ -36,13 +48,14 @@ export interface InvestmentRule {
 export interface Holding {
   asset: string;
   amount: string; // Decimal-safe string
-  usdValuation?: HoldingUsdValuation;
+  origin?: HoldingOrigin;
+  valuation?: AssetValuation;
 }
 
 export interface NeedsProfile {
   holdings: Holding[];
   horizonDays: number;
-  minimumLiquidUsd: string;
+  minimumLiquidUsdtEquivalent: string;
   riskLevel: RiskLevel;
   maxVolatileExposurePct: string;
   goal: Goal;
@@ -50,7 +63,7 @@ export interface NeedsProfile {
   allowedAssets?: string[];
   excludedAssets?: string[];
 
-  protectionClause?: string; // e.g. "여행비 $300은 운용 대상에서 제외"
+  protectionClause?: string; // e.g. "USDT-equivalent 300은 운용 대상에서 제외"
   missingFields: string[];
   assumptions: string[];
   sourceQuote?: string | null;
@@ -69,6 +82,7 @@ export interface YieldOpportunity {
   contractAddress: string;
   underlyingAddress?: string;
   underlyingDecimals: number;
+  underlyingPriceInTrx?: string;
 
   baseApy: string; // e.g. "0.035" for 3.5%
   incentiveApy: string | null; // null means no source-backed reward value is available
@@ -89,8 +103,8 @@ export interface YieldOpportunity {
   lockupDays: number;
   exitConditions: string[];
 
-  estimatedEntryCostUsd: string;
-  estimatedExitCostUsd: string;
+  estimatedEntryCostUsdtEquivalent: string;
+  estimatedExitCostUsdtEquivalent: string;
 
   executable: boolean;
   executabilityClass: ExecutabilityClass;
@@ -114,17 +128,17 @@ export interface AllocationLeg {
   productName: string;
   protocol: string;
   amount: string;
-  usdValue: string;
+  valueUsdtEquivalent: string;
   allocationPct: string;
 
   baseApy: string;
   incentiveApy: string | null;
   totalApy: string | null;
 
-  baseYieldEstimateUsd: string;
-  incentiveYieldEstimateUsd: string | null;
-  estimatedCostUsd: string;
-  netYieldEstimateUsd: string | null;
+  baseYieldEstimateUsdtEquivalent: string;
+  incentiveYieldEstimateUsdtEquivalent: string | null;
+  estimatedCostUsdtEquivalent: string;
+  netYieldEstimateUsdtEquivalent: string | null;
 
   executable: boolean;
   executabilityClass: ExecutabilityClass;
@@ -153,17 +167,17 @@ export interface AllocationPlan {
   createdAt: string;
   horizonDays: number;
 
-  totalCapitalUsd: string;
-  usdValuationStatus?: "SOURCE_BACKED" | "SNAPSHOT" | "SIMULATED" | "UNAVAILABLE";
-  liquidReserveUsd: string;
+  totalCapitalUsdtEquivalent: string;
+  valuationStatus?: "SOURCE_BACKED" | "SNAPSHOT" | "SIMULATED" | "UNAVAILABLE";
+  liquidReserveUsdtEquivalent: string;
   liquidReservePct: string;
 
   allocations: AllocationLeg[];
 
-  expectedBaseYieldUsd: string;
-  expectedIncentiveYieldUsd: string | null;
-  estimatedTotalCostUsd: string;
-  expectedNetYieldUsd: string | null;
+  expectedBaseYieldUsdtEquivalent: string;
+  expectedIncentiveYieldUsdtEquivalent: string | null;
+  estimatedTotalCostUsdtEquivalent: string;
+  expectedNetYieldUsdtEquivalent: string | null;
   effectiveNetApy: string | null;
 
   liquidityScore: number; // 1-100

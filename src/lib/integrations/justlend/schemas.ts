@@ -6,6 +6,7 @@ export const RawJustLendTokenSchema = z.object({
   underlyingSymbol: z.string().optional().default(""),
   underlyingAddress: z.string().optional().default(""),
   underlyingDecimal: z.number().optional().default(18),
+  underlyingPriceInTrx: z.string().optional(),
   supplyRate: z.string().optional().default("0"),
   borrowRate: z.string().optional().default("0"),
   exchangeRate: z.string().optional().default("1"),

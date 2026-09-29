@@ -1,4 +1,4 @@
-import { formatUnits } from "@/lib/math/decimal";
+import { Decimal, formatUnits, parseUnits } from "@/lib/math/decimal";
 import { JTRX_ABI, JUSTLEND_NILE_CONTRACTS } from "@/lib/integrations/justlend/contracts";
 
 export type TronNetwork = "mainnet" | "nile";
@@ -80,23 +80,24 @@ export async function fetchTronWalletBalances(
   address: string,
   tronWebInstance?: any,
   network: TronNetwork = "nile"
-): Promise<{ trx: string; usdd: string; usdt: string; rawSun?: number }> {
+): Promise<{ trx: string; usdd: string; usdt: string; rawSun?: string }> {
   if (!address) return { trx: "UNAVAILABLE", usdd: "UNAVAILABLE", usdt: "UNAVAILABLE" };
 
   const tw =
     tronWebInstance ||
     (typeof window !== "undefined" ? (window as any).tronWeb : null);
 
-  let sunNum = 0;
+  let sunRaw: string | null = null;
   let fetchedFromTronWeb = false;
   let balanceAvailable = false;
 
   if (tw) {
     try {
       const sunBalance = await tw.trx.getBalance(address);
-      const parsed = Number(sunBalance);
-      if (!isNaN(parsed)) {
-        sunNum = parsed;
+      const raw = String(sunBalance);
+      const exactNumber = typeof sunBalance !== "number" || Number.isSafeInteger(sunBalance);
+      if (exactNumber && /^\d+$/.test(raw)) {
+        sunRaw = raw;
         fetchedFromTronWeb = true;
         balanceAvailable = true;
       }
@@ -113,8 +114,9 @@ export async function fetchTronWalletBalances(
       );
       if (res.ok) {
         const data = await res.json();
-        if (data.success && typeof data.balanceSun === "number") {
-          sunNum = data.balanceSun;
+        const exactNumber = typeof data.balanceSun !== "number" || Number.isSafeInteger(data.balanceSun);
+        if (data.success && exactNumber && (typeof data.balanceSun === "number" || typeof data.balanceSun === "string") && /^\d+$/.test(String(data.balanceSun))) {
+          sunRaw = String(data.balanceSun);
           balanceAvailable = true;
         }
       }
@@ -127,12 +129,10 @@ export async function fetchTronWalletBalances(
     return { trx: "UNAVAILABLE", usdd: "UNAVAILABLE", usdt: "UNAVAILABLE" };
   }
 
-  const trx = (sunNum / 1_000_000).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  });
+  if (!sunRaw) return { trx: "UNAVAILABLE", usdd: "UNAVAILABLE", usdt: "UNAVAILABLE" };
+  const trx = formatUnits(sunRaw, 6);
 
-  return { trx, usdd: "UNAVAILABLE", usdt: "UNAVAILABLE", rawSun: sunNum };
+  return { trx, usdd: "UNAVAILABLE", usdt: "UNAVAILABLE", rawSun: sunRaw };
 }
 
 /** Reads the connected Nile wallet's actual jTRX balance using the verified 8-decimal token ABI. */
@@ -150,6 +150,42 @@ export async function fetchNileJTrxBalance(
     return formatUnits(String(rawBalance), JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.decimals);
   } catch (err) {
     console.warn("Nile jTRX balance query failed:", err);
+    return null;
+  }
+}
+
+/** Reads the Nile jTRX stored exchange-rate mantissa for a redeem estimate. */
+export async function fetchNileJTrxExchangeRate(
+  tronWebInstance?: any,
+  network: TronNetwork = "nile"
+): Promise<{ raw: string; fetchedAt: string } | null> {
+  if (network !== "nile") return null;
+  const tw = tronWebInstance || (typeof window !== "undefined" ? (window as any).tronWeb : null);
+  if (!tw) return null;
+  try {
+    const contract = await tw.contract(JTRX_ABI, JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58);
+    const raw = String(await contract.exchangeRateStored().call());
+    if (!/^\d+$/.test(raw) || raw === "0") return null;
+    return { raw, fetchedAt: new Date().toISOString() };
+  } catch (err) {
+    console.warn("Nile jTRX exchange rate query failed:", err);
+    return null;
+  }
+}
+
+/** Estimates TRX redeemed from a human jTRX amount using the current Nile rate.
+ * Compound exchangeRateStored is scaled by 1e18 and maps raw jToken units to
+ * raw underlying units; flooring to sun avoids promising an unrepresentable fraction.
+ */
+export function estimateNileJTrxRedeemTrx(amountJTrx: string, exchangeRateRaw: string): string | null {
+  if (!/^\d+(?:\.\d+)?$/.test(amountJTrx) || !/^\d+$/.test(exchangeRateRaw)) return null;
+  try {
+    const amountRaw = new Decimal(parseUnits(amountJTrx, JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.decimals));
+    const rate = new Decimal(exchangeRateRaw);
+    if (!amountRaw.isFinite() || !amountRaw.gt(0) || !rate.isFinite() || !rate.gt(0)) return null;
+    const underlyingRaw = amountRaw.times(rate).div(new Decimal(10).pow(18)).floor();
+    return formatUnits(underlyingRaw.toFixed(0), JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.underlyingDecimals ?? 6);
+  } catch {
     return null;
   }
 }

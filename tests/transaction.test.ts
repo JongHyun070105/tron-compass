@@ -5,11 +5,13 @@ import {
   prepareJTrxSupplyPreview,
   prepareJTrxRedeemPreview,
   determineTransactionState,
+  computeBalanceDelta,
 } from "../src/lib/tron/transaction";
 import { JUSTLEND_NILE_CONTRACTS } from "../src/lib/integrations/justlend/contracts";
 import * as transaction from "../src/lib/tron/transaction";
 import { compassStorage } from "../src/lib/persistence/storage";
-import { fetchNileJTrxBalance, fetchTronWalletBalances } from "../src/lib/tron/network";
+import { estimateNileJTrxRedeemTrx, fetchNileJTrxBalance, fetchNileJTrxExchangeRate, fetchTronWalletBalances } from "../src/lib/tron/network";
+import { JUSTLEND_VALUATION_SOURCE } from "../src/domain/allocation/valuation";
 
 describe("TRON Execution Layer — Preflight & Preview", () => {
   it("fails closed and records a stop instead of invoking the wallet for an out-of-rule pre-sign edit", async () => {
@@ -83,7 +85,7 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
     expect(gate.stops.some((stop: any) => stop.guardId === "MARKET_EVIDENCE_STALE")).toBe(true);
   });
 
-  it("fails closed when holdings lack fresh source-backed USD valuation", () => {
+  it("fails closed when holdings lack fresh source-backed USDT-equivalent valuation", () => {
     const gate = (transaction as any).evaluateNileExecutionSafety({
       network: "Nile Testnet",
       leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
@@ -91,13 +93,55 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
       approvedPreview: { actionType: "SUPPLY", amount: "1", amountRaw: "1000000", network: "NILE", targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58, method: "mint()", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile", approvalScope: "Supply" },
       approvalShown: true,
       evidence: [{ fetchedAt: new Date().toISOString(), reality: "LIVE_MAINNET" }],
-      valuationEvidence: [{ fetchedAt: null, reality: "SIMULATED" }],
+      valuationEvidence: [{ holding: { asset: "TRX", amount: "100" }, valuation: null }],
       rulesPassed: true,
       now: Date.now(),
     });
 
     expect(gate.ready).toBe(false);
-    expect(gate.stops.some((stop: any) => stop.guardId === "HOLDING_VALUATION_STALE")).toBe(true);
+    expect(gate.stops.some((stop: any) => stop.guardId === "HOLDING_VALUATION_MISSING" && stop.reason === "Live valuation unavailable — execution paused.")).toBe(true);
+  });
+
+  it("allows execution valuation evidence only when the complete USDT-equivalent valuation is fresh", () => {
+    const now = Date.parse("2026-09-29T00:00:00.000Z");
+    const preview = { actionType: "SUPPLY", amount: "1", amountRaw: "1000000", network: "NILE", targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58, method: "mint()", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile", approvalScope: "Supply" } as const;
+    const gate = (transaction as any).evaluateNileExecutionSafety({
+      network: "Nile Testnet",
+      leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
+      preview,
+      approvedPreview: preview,
+      approvalShown: true,
+      evidence: [{ fetchedAt: new Date(now).toISOString(), reality: "LIVE_MAINNET" }],
+      valuationEvidence: [{
+        holding: { asset: "TRX", amount: "100" },
+        valuation: { asset: "TRX", amount: "100", value: "25", denomination: "USDT", source: JUSTLEND_VALUATION_SOURCE, fetchedAt: new Date(now).toISOString(), reality: "LIVE_MAINNET", stale: false },
+      }],
+      rulesPassed: true,
+      now,
+    });
+    expect(gate.ready).toBe(true);
+  });
+
+  it("blocks execution when a holding valuation is stale or mislabeled USD", () => {
+    const now = Date.parse("2026-09-29T00:00:00.000Z");
+    const preview = { actionType: "SUPPLY", amount: "1", amountRaw: "1000000", network: "NILE", targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58, method: "mint()", estimatedFeeTrx: "15-25 TRX", riskNotice: "Nile", approvalScope: "Supply" } as const;
+    const makeGate = (valuation: Record<string, unknown>) => (transaction as any).evaluateNileExecutionSafety({
+      network: "Nile Testnet",
+      leg: { executabilityClass: "NILE_EXECUTABLE", executionNetwork: "NILE" },
+      preview,
+      approvedPreview: preview,
+      approvalShown: true,
+      evidence: [{ fetchedAt: new Date(now).toISOString(), reality: "LIVE_MAINNET" }],
+      valuationEvidence: [{ holding: { asset: "TRX", amount: "100" }, valuation }],
+      rulesPassed: true,
+      now,
+    });
+    const stale = makeGate({ asset: "TRX", amount: "100", value: "25", denomination: "USDT", source: JUSTLEND_VALUATION_SOURCE, fetchedAt: new Date(now - 6 * 60 * 1000).toISOString(), reality: "LIVE_MAINNET", stale: false });
+    const mislabeled = makeGate({ asset: "TRX", amount: "100", value: "25", denomination: "USD", source: JUSTLEND_VALUATION_SOURCE, fetchedAt: new Date(now).toISOString(), reality: "LIVE_MAINNET", stale: false });
+    for (const gate of [stale, mislabeled]) {
+      expect(gate.ready).toBe(false);
+      expect(gate.stops.some((stop: any) => stop.reason === "Live valuation unavailable — execution paused.")).toBe(true);
+    }
   });
 
   it("stops when the transaction fields changed after the user saw approval", () => {
@@ -136,13 +180,41 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
       contract: async (abi: unknown, address: string) => {
         expect(address).toBe(JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58);
         expect(Array.isArray(abi)).toBe(true);
-        return { balanceOf: () => ({ call: async () => "12500000000" }) };
+        return { balanceOf: () => ({ call: async () => "12345678901" }) };
       },
     }, "nile");
     const unavailable = await fetchNileJTrxBalance("TUser", {}, "mainnet");
 
-    expect(balance).toBe("125");
+    expect(balance).toBe("123.45678901");
     expect(unavailable).toBeNull();
+  });
+
+  it("reads the exchange rate only from the canonical Nile jTRX contract", async () => {
+    let called = false;
+    const nileRate = await fetchNileJTrxExchangeRate({
+      contract: async (_abi: unknown, address: string) => {
+        expect(address).toBe(JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58);
+        return { exchangeRateStored: () => ({ call: async () => "200000000000000" }) };
+      },
+    }, "nile");
+    const mainnetRate = await fetchNileJTrxExchangeRate({
+      contract: async () => { called = true; throw new Error("must not read a Mainnet contract"); },
+    }, "mainnet");
+    expect(nileRate?.raw).toBe("200000000000000");
+    expect(mainnetRate).toBeNull();
+    expect(called).toBe(false);
+  });
+
+  it("uses Nile exchangeRateStored for an approximate jTRX redemption quote", () => {
+    expect(estimateNileJTrxRedeemTrx("100", "200000000000000")).toBe("2");
+    expect(estimateNileJTrxRedeemTrx("0", "200000000000000")).toBeNull();
+    expect(estimateNileJTrxRedeemTrx("1", "0")).toBeNull();
+  });
+
+  it("computes observed TRX and jTRX deltas at their respective decimal precision", () => {
+    expect(computeBalanceDelta("10.123456", "12", 6)).toBe("1.876544");
+    expect(computeBalanceDelta("125", "124.125", 8)).toBe("-0.87500000");
+    expect(computeBalanceDelta("UNAVAILABLE", "1", 8)).toBeNull();
   });
 
   it("shows only observed TRX balance and leaves unsupported token balances unavailable", async () => {
@@ -151,10 +223,25 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
     }, "nile");
     const unavailable = await fetchTronWalletBalances("", {}, "nile");
 
-    expect(balances.trx).toBe("125.00");
+    expect(balances.trx).toBe("125");
     expect(balances.usdd).toBe("UNAVAILABLE");
     expect(balances.usdt).toBe("UNAVAILABLE");
     expect(unavailable).toEqual({ trx: "UNAVAILABLE", usdd: "UNAVAILABLE", usdt: "UNAVAILABLE" });
+  });
+
+  it("parses native TRX in sun without floating point", async () => {
+    const balances = await fetchTronWalletBalances("TUser", {
+      trx: { getBalance: async () => "1234567" },
+    }, "nile");
+    expect(balances.trx).toBe("1.234567");
+    expect(balances.rawSun).toBe("1234567");
+  });
+
+  it("rejects an unsafe JavaScript number instead of recording a rounded balance", async () => {
+    const balances = await fetchTronWalletBalances("TUser", {
+      trx: { getBalance: async () => Number.MAX_SAFE_INTEGER + 1 },
+    }, "nile");
+    expect(balances.trx).toBe("UNAVAILABLE");
   });
 
   it("does not parse an unavailable wallet balance as a real zero", () => {

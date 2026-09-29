@@ -160,7 +160,24 @@ describe("TronGridClient Server-Side Unit Tests", () => {
 
     expect(receipt.status).toBe("CONFIRMED");
     expect(receipt.blockNumber).toBe(71255555);
+    expect(receipt.feeSun).toBe(265000);
     expect(receipt.energyFeeSun).toBe(15000000);
+  });
+
+  it("leaves actual fee unavailable when TronGrid omits its total fee field", async () => {
+    const txHash = "confirmed-without-fee-22222222222222222222222222222222222222222222";
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (String(url).includes("/wallet/gettransactioninfobyid")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ id: txHash, blockNumber: 71255557, receipt: { result: "SUCCESS" } }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+    const receipt = await new TronGridClient("nile").getTransactionInfo(txHash);
+    expect(receipt.status).toBe("CONFIRMED");
+    expect(receipt.feeSun).toBeUndefined();
   });
 
   it("correctly identifies FAILED when transaction execution reverted or failed", async () => {

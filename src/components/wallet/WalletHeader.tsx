@@ -21,6 +21,7 @@ export interface WalletState {
 
 interface WalletHeaderProps {
   walletState: WalletState;
+  jTrxBalance: string | null;
   onConnect: () => void;
   onDisconnect: () => void;
   onToggleDemoMode: () => void;
@@ -28,6 +29,7 @@ interface WalletHeaderProps {
 
 export function WalletHeader({
   walletState,
+  jTrxBalance,
   onConnect,
   onDisconnect,
   onToggleDemoMode,
@@ -106,8 +108,17 @@ export function WalletHeader({
                   {walletState.address.slice(0, 5)}...{walletState.address.slice(-4)}
                 </span>
                 <span className="text-slate-900 font-bold font-mono pl-1 border-l border-slate-200">
-                  {walletState.trxBalance === "UNAVAILABLE" ? "TRX balance unavailable" : `${walletState.trxBalance} TRX`}
+                  {walletState.isDemoMode
+                    ? `SIMULATED · ${walletState.trxBalance} TRX`
+                    : walletState.trxBalance === "UNAVAILABLE" ? "TRX balance unavailable" : `${walletState.trxBalance} TRX`}
                 </span>
+                {walletState.network.toLowerCase().includes("nile") && (
+                  <span className="text-purple-700 font-bold font-mono pl-1 border-l border-slate-200">
+                    {walletState.isDemoMode
+                      ? `SIMULATED · ${jTrxBalance ?? "250.00"} jTRX`
+                      : jTrxBalance === null ? "jTRX unavailable" : `${jTrxBalance} jTRX`}
+                  </span>
+                )}
               </div>
 
               <button

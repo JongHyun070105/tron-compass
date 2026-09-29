@@ -86,6 +86,7 @@ export function normalizeJustLendToken(
     contractAddress: token.address,
     underlyingAddress: token.underlyingAddress,
     underlyingDecimals: token.underlyingDecimal,
+    underlyingPriceInTrx: token.underlyingPriceInTrx,
 
     baseApy,
     incentiveApy,
@@ -116,8 +117,8 @@ export function normalizeJustLendToken(
       "Redemption consumes TRON Energy/Bandwidth or burns TRX for resources",
     ],
 
-    estimatedEntryCostUsd: "0.20", // Compass policy estimate; not an observed chain fee.
-    estimatedExitCostUsd: "0.20",
+    estimatedEntryCostUsdtEquivalent: "0.20", // Compass policy estimate; not an observed chain fee.
+    estimatedExitCostUsdtEquivalent: "0.20",
 
     executable: isNileSupported,
     executabilityClass: isNileSupported ? "NILE_EXECUTABLE" : "LIVE_DATA_ONLY",

@@ -2,7 +2,7 @@ import { AllocationPlan, EvidenceReality, InvestmentRule, NeedsProfile, YieldOpp
 import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
 import { getRuleForType } from "@/domain/allocation/rules";
 import { USDD_POLICY_THRESHOLDS } from "@/domain/allocation/usdd-signals";
-import { hasFreshMainnetUsdValuation } from "@/domain/allocation/valuation";
+import { hasFreshMainnetValuation } from "@/domain/allocation/valuation";
 
 export type AssumptionStatus = "PASS" | "WARNING" | "FAIL" | "UNKNOWN";
 export type AssumptionThresholdProvenance = "OFFICIAL" | "COMPASS_POLICY" | "USER_DEFINED" | "MARKET_SNAPSHOT";
@@ -41,7 +41,7 @@ export interface DecisionAssumption {
 export interface DecisionAlternative {
   planId: string;
   allocations: AllocationPlan["allocations"];
-  usdValuationStatus?: AllocationPlan["usdValuationStatus"];
+  valuationStatus?: AllocationPlan["valuationStatus"];
   baseYield: string;
   incentiveYield: string | null;
   estimatedCost: string | null;
@@ -104,14 +104,25 @@ export interface DecisionReceipt extends DecisionReceiptDraft {
     contract: string | null;
     method: string | null;
     callValue: string | null;
+    amountAsset?: string | null;
+    amount?: string | null;
+    amountRaw?: string | null;
     txHash: string | null;
     blockNumber: number | null;
+    contractResult?: string | null;
     result: "PREPARED" | "AWAITING_SIGNATURE" | "BROADCAST" | "PENDING" | "CONFIRMED" | "FAILED" | "SIMULATED";
     energyUsed: number | null;
     netUsed: number | null;
     actualFee: string | null;
     balanceBefore: string | null;
     balanceAfter: string | null;
+    trxBalanceBefore?: string | null;
+    trxBalanceAfter?: string | null;
+    jTrxBalanceBefore?: string | null;
+    jTrxBalanceAfter?: string | null;
+    trxBalanceDelta?: string | null;
+    jTrxBalanceDelta?: string | null;
+    balanceReality?: "NILE_LIVE" | null;
   };
   stops: DecisionStopRecord[];
   integrity: { engineVersion: string; decisionHash: string };
@@ -167,14 +178,25 @@ export async function createDecisionReceipt(draft: DecisionReceiptDraft): Promis
       contract: null,
       method: null,
       callValue: null,
+      amountAsset: null,
+      amount: null,
+      amountRaw: null,
       txHash: null,
       blockNumber: null,
+      contractResult: null,
       result: "PREPARED",
       energyUsed: null,
       netUsed: null,
       actualFee: null,
       balanceBefore: null,
       balanceAfter: null,
+      trxBalanceBefore: null,
+      trxBalanceAfter: null,
+      jTrxBalanceBefore: null,
+      jTrxBalanceAfter: null,
+      trxBalanceDelta: null,
+      jTrxBalanceDelta: null,
+      balanceReality: null,
     },
     stops: [],
     integrity: { engineVersion: "decision-engine/1.0.0", decisionHash: "" },
@@ -221,18 +243,32 @@ export function buildDecisionEvidence(
 ): DecisionEvidenceItem[] {
   const items: DecisionEvidenceItem[] = [];
   for (const holding of profile?.holdings ?? []) {
-    const valuation = holding.usdValuation;
+    const valuation = holding.valuation;
     items.push({
-      id: `holding-${holding.asset.toLowerCase()}-usd-valuation`,
-      field: `portfolio.holdings.${holding.asset}.usdValue`,
-      value: valuation?.valueUsd ?? null,
+      id: `holding-${holding.asset.toLowerCase()}-origin`,
+      field: `portfolio.holdings.${holding.asset}.origin`,
+      value: holding.origin ?? "USER_DECLARED",
+      source: "TRON Compass planning input",
+      fetchedAt: null,
+      terms: holding.origin === "USER_DECLARED"
+        ? "Hypothetical planning quantity explicitly supplied by the user; it is not a connected-wallet balance."
+        : holding.origin === "NILE_LIVE"
+          ? "Nile testnet balance is execution capacity only and is excluded from the Mainnet planning portfolio."
+          : "Synthetic demo fixture; not a wallet observation.",
+      reality: "SNAPSHOT",
+      observedReality: holding.origin ?? "USER_DECLARED",
+    });
+    items.push({
+      id: `holding-${holding.asset.toLowerCase()}-usdt-equivalent-valuation`,
+      field: `portfolio.holdings.${holding.asset}.usdtEquivalentValue`,
+      value: valuation?.value ?? null,
       source: valuation?.source ?? "UNAVAILABLE",
       fetchedAt: valuation?.fetchedAt ?? null,
-      terms: valuation?.terms ?? (valuation
-        ? "Holding value is a sourced estimate; inspect its reality label before relying on it."
-        : "No USD valuation source is recorded; reserve and exposure calculations are unavailable."),
+      terms: valuation?.derivation ?? (valuation
+        ? "USDT-equivalent holding value; inspect its source, freshness and reality label."
+        : "No live USDT-equivalent valuation source is recorded; reserve and exposure calculations are unavailable."),
       reality: "SNAPSHOT",
-      observedReality: valuation?.reality ?? "SNAPSHOT",
+      observedReality: valuation?.reality ?? "UNAVAILABLE",
     });
   }
   for (const opportunity of opportunities) {
@@ -306,21 +342,21 @@ export function buildDecisionEvidence(
     }
     items.push({
       id: `${opportunity.id}-entry-cost-estimate`,
-      field: `${opportunity.id}.estimatedEntryCostUsd`,
-      value: opportunity.estimatedEntryCostUsd,
+      field: `${opportunity.id}.estimatedEntryCostUsdtEquivalent`,
+      value: opportunity.estimatedEntryCostUsdtEquivalent,
       source: "TRON Compass policy estimate",
       fetchedAt: null,
-      terms: "Policy estimate only; not an observed transaction fee.",
+      terms: "Compass policy estimate in USDT-equivalent; not an observed transaction fee or USD conversion.",
       reality: "SNAPSHOT",
       observedReality: "SNAPSHOT",
     });
     items.push({
       id: `${opportunity.id}-exit-cost-estimate`,
-      field: `${opportunity.id}.estimatedExitCostUsd`,
-      value: opportunity.estimatedExitCostUsd,
+      field: `${opportunity.id}.estimatedExitCostUsdtEquivalent`,
+      value: opportunity.estimatedExitCostUsdtEquivalent,
       source: "TRON Compass policy estimate",
       fetchedAt: null,
-      terms: "Policy estimate only; not an observed transaction fee.",
+      terms: "Compass policy estimate in USDT-equivalent; not an observed transaction fee or USD conversion.",
       reality: "SNAPSHOT",
       observedReality: "SNAPSHOT",
     });
@@ -394,7 +430,7 @@ export function buildDecisionAssumptions(
   const assumptions: DecisionAssumption[] = [];
   let nextId = 1;
   const checkedAtMs = Date.parse(checkedAt);
-  const portfolioUsdValuationFresh = hasFreshMainnetUsdValuation(profile, checkedAtMs, 5 * 60 * 1000);
+  const portfolioUsdtEquivalentValuationFresh = hasFreshMainnetValuation(profile, checkedAtMs, 5 * 60 * 1000);
   const isFreshLive = (reality: string | null | undefined, fetchedAt: string | null) => {
     const fetchedAtMs = fetchedAt ? Date.parse(fetchedAt) : Number.NaN;
     return reality === "LIVE_MAINNET" && Number.isFinite(checkedAtMs) &&
@@ -435,22 +471,22 @@ export function buildDecisionAssumptions(
   }
   const liquidityRule = getRuleForType(profile.investmentRules, "MINIMUM_LIQUIDITY");
   if (liquidityRule) {
-    const liquid = Number(plan.liquidReserveUsd);
+    const liquid = Number(plan.liquidReserveUsdtEquivalent);
     const required = Number(liquidityRule.value);
     assumptions.push({
       id: `A${nextId++}`,
       description: "The selected plan continues to preserve the user-confirmed liquid reserve.",
-      sourceField: "plan.liquidReserveUsd",
+      sourceField: "plan.liquidReserveUsdtEquivalent",
       predicate: "GTE",
       threshold: liquidityRule.value,
       thresholdProvenance: "USER_DEFINED",
-      status: !portfolioUsdValuationFresh
+      status: !portfolioUsdtEquivalentValuationFresh
         ? "UNKNOWN"
         : Number.isFinite(liquid) && liquid >= required ? "PASS" : "FAIL",
       lastCheckedAt: checkedAt,
-      reason: portfolioUsdValuationFresh
+      reason: portfolioUsdtEquivalentValuationFresh
         ? undefined
-        : "Portfolio USD valuations are not fresh LIVE MAINNET evidence.",
+        : "Portfolio USDT-equivalent valuations are not fresh LIVE MAINNET evidence.",
     });
   }
   if (plan.allocations.some((leg) => leg.asset === "USDD") && usddEvidence?.collateralRatioPct) {

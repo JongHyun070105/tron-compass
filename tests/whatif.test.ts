@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { generateAllocationPlans, computeTotalCapitalUsd } from "../src/domain/allocation/engine";
+import { generateAllocationPlans, computeTotalCapitalValue } from "../src/domain/allocation/engine";
 import { NeedsProfile, YieldOpportunity } from "../src/domain/allocation/types";
 import { normalizeJustLendMarketList } from "../src/lib/integrations/justlend/normalize";
 import { JUSTLEND_FALLBACK_FIXTURE } from "../src/lib/integrations/justlend/fixture";
@@ -26,11 +26,11 @@ const healthyLiveUsddEvidence: UsddProtocolEvidence = {
 describe("What-If Simulation Engine (Zero AI, Instantaneous Local Determinism)", () => {
   const baseProfile: NeedsProfile = {
     holdings: [
-      { asset: "USDD", amount: "1000", usdValuation: { valueUsd: "1000", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
-      { asset: "TRX", amount: "2000", usdValuation: { valueUsd: "500", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
+      { asset: "USDD", amount: "1000", origin: "SIMULATED", valuation: { asset: "USDD", amount: "1000", value: "1000", denomination: "USDT", source: "test fixture", fetchedAt: null, reality: "SIMULATED", stale: false } },
+      { asset: "TRX", amount: "2000", origin: "SIMULATED", valuation: { asset: "TRX", amount: "2000", value: "500", denomination: "USDT", source: "test fixture", fetchedAt: null, reality: "SIMULATED", stale: false } },
     ],
     horizonDays: 90,
-    minimumLiquidUsd: "300",
+    minimumLiquidUsdtEquivalent: "300",
     riskLevel: "LOW",
     maxVolatileExposurePct: "0.20",
     goal: "BALANCED",
@@ -42,43 +42,43 @@ describe("What-If Simulation Engine (Zero AI, Instantaneous Local Determinism)",
     // 1. Profile with $100 minimum liquid
     const profileLowLiquid: NeedsProfile = {
       ...baseProfile,
-      minimumLiquidUsd: "100",
+      minimumLiquidUsdtEquivalent: "100",
     };
     const { plans: plansLow } = generateAllocationPlans(profileLowLiquid, sampleOpportunities, undefined, healthyLiveUsddEvidence);
     const planBLow = plansLow[1]; // Yield-oriented
-    const liquidLow = parseFloat(planBLow.liquidReserveUsd);
+    const liquidLow = parseFloat(planBLow.liquidReserveUsdtEquivalent);
 
     // 2. Profile with $800 minimum liquid
     const profileHighLiquid: NeedsProfile = {
       ...baseProfile,
-      minimumLiquidUsd: "800",
+      minimumLiquidUsdtEquivalent: "800",
     };
     const { plans: plansHigh } = generateAllocationPlans(profileHighLiquid, sampleOpportunities, undefined, healthyLiveUsddEvidence);
     const planBHigh = plansHigh[1];
-    const liquidHigh = parseFloat(planBHigh.liquidReserveUsd);
+    const liquidHigh = parseFloat(planBHigh.liquidReserveUsdtEquivalent);
 
     // Must satisfy hard constraints in both
     expect(liquidLow).toBeGreaterThanOrEqual(100);
     expect(liquidHigh).toBeGreaterThanOrEqual(800);
 
     // Higher liquid requirement must leave less allocated for yield
-    const totalAllocLow = planBLow.allocations.reduce((sum, a) => sum + parseFloat(a.usdValue), 0);
-    const totalAllocHigh = planBHigh.allocations.reduce((sum, a) => sum + parseFloat(a.usdValue), 0);
+    const totalAllocLow = planBLow.allocations.reduce((sum, a) => sum + parseFloat(a.valueUsdtEquivalent), 0);
+    const totalAllocHigh = planBHigh.allocations.reduce((sum, a) => sum + parseFloat(a.valueUsdtEquivalent), 0);
 
     expect(totalAllocLow).toBeGreaterThan(totalAllocHigh);
   });
 
   it("preserves 100% capital as liquid reserve with 0 allocated when 100% liquidity is requested", () => {
-    const totalCap = computeTotalCapitalUsd(baseProfile); // $1500
+    const totalCap = computeTotalCapitalValue(baseProfile); // $1500
     const profile100Liquid: NeedsProfile = {
       ...baseProfile,
-      minimumLiquidUsd: totalCap, // 1500
+      minimumLiquidUsdtEquivalent: totalCap, // 1500
     };
 
     const { plans } = generateAllocationPlans(profile100Liquid, sampleOpportunities);
 
     for (const plan of plans) {
-      expect(parseFloat(plan.liquidReserveUsd)).toBeCloseTo(1500, 2);
+      expect(parseFloat(plan.liquidReserveUsdtEquivalent)).toBeCloseTo(1500, 2);
       expect(plan.allocations.length).toBe(0);
       expect(plan.deterministicReasons).toContain("No allocation was generated because available evidence and confirmed rules did not support one.");
     }
@@ -105,8 +105,8 @@ describe("What-If Simulation Engine (Zero AI, Instantaneous Local Determinism)",
 
     expect(trxLegHigh).toBeDefined();
     expect(trxLegLow).toBeDefined();
-    expect(parseFloat(trxLegLow!.usdValue)).toBeLessThanOrEqual(150.01);
-    expect(parseFloat(trxLegHigh!.usdValue)).toBeGreaterThan(parseFloat(trxLegLow!.usdValue));
+    expect(parseFloat(trxLegLow!.valueUsdtEquivalent)).toBeLessThanOrEqual(150.01);
+    expect(parseFloat(trxLegHigh!.valueUsdtEquivalent)).toBeGreaterThan(parseFloat(trxLegLow!.valueUsdtEquivalent));
   });
 
   it("calculates plans purely in-memory synchronously without invoking external AI API", () => {

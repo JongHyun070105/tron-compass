@@ -20,9 +20,9 @@ export interface RebalanceProposal {
   checks: RebalanceTriggerCheck[];
   primaryReason: string;
   marketDeltaSummary: string;
-  originalExpectedReturnUsd: string;
-  newExpectedReturnUsd: string;
-  deltaReturnUsd: string;
+  originalExpectedReturnUsdtEquivalent: string;
+  newExpectedReturnUsdtEquivalent: string;
+  deltaReturnUsdtEquivalent: string;
   deltaReturnPct: string;
   proposedPlan: AllocationPlan;
 }
@@ -31,19 +31,19 @@ export function detectRebalanceOpportunity(
   originalPlan: AllocationPlan,
   profile: NeedsProfile,
   currentOpportunities: YieldOpportunity[],
-  effectiveLiquidUsd?: string
+  effectiveLiquidUsdtEquivalent?: string
 ): RebalanceProposal {
-  if (originalPlan.usdValuationStatus === "UNAVAILABLE") {
+  if (originalPlan.valuationStatus === "UNAVAILABLE") {
     const unavailable = "UNAVAILABLE";
-    const reason = "USD valuation evidence is unavailable; dollar impact and allocation changes cannot be checked.";
+    const reason = "Live USDT-equivalent valuation evidence is unavailable; impact and allocation changes cannot be checked.";
     return {
       triggered: false,
       checks: [],
       primaryReason: reason,
       marketDeltaSummary: reason,
-      originalExpectedReturnUsd: unavailable,
-      newExpectedReturnUsd: unavailable,
-      deltaReturnUsd: unavailable,
+      originalExpectedReturnUsdtEquivalent: unavailable,
+      newExpectedReturnUsdtEquivalent: unavailable,
+      deltaReturnUsdtEquivalent: unavailable,
       deltaReturnPct: unavailable,
       proposedPlan: originalPlan,
     };
@@ -60,26 +60,26 @@ export function detectRebalanceOpportunity(
   for (const leg of originalPlan.allocations) {
     const currentOpp = currentOpportunities.find((o) => o.id === leg.productId);
     if (!currentOpp) {
-      if (leg.netYieldEstimateUsd === null) {
+      if (leg.netYieldEstimateUsdtEquivalent === null) {
         simulatedNetYieldAvailable = false;
       } else {
-        simulatedCurrentNetYield = simulatedCurrentNetYield.plus(toDecimal(leg.netYieldEstimateUsd));
+        simulatedCurrentNetYield = simulatedCurrentNetYield.plus(toDecimal(leg.netYieldEstimateUsdtEquivalent));
       }
       continue;
     }
 
     const decomp = decomposeLegYield(
-      leg.usdValue,
+      leg.valueUsdtEquivalent,
       currentOpp.baseApy,
       currentOpp.incentiveApy,
       originalPlan.horizonDays,
-      currentOpp.estimatedEntryCostUsd,
-      currentOpp.estimatedExitCostUsd
+      currentOpp.estimatedEntryCostUsdtEquivalent,
+      currentOpp.estimatedExitCostUsdtEquivalent
     );
-    if (decomp.netYieldUsd === null) {
+    if (decomp.netYieldUsdtEquivalent === null) {
       simulatedNetYieldAvailable = false;
     } else {
-      simulatedCurrentNetYield = simulatedCurrentNetYield.plus(toDecimal(decomp.netYieldUsd));
+      simulatedCurrentNetYield = simulatedCurrentNetYield.plus(toDecimal(decomp.netYieldUsdtEquivalent));
     }
 
     const originalApy = toDecimal(leg.totalApy ?? leg.baseApy);
@@ -98,18 +98,18 @@ export function detectRebalanceOpportunity(
   }
 
   // 2. Check Liquidity Shortfall (if effective balance changed)
-  const requiredLiquid = toDecimal(profile.minimumLiquidUsd);
-  const currentLiquid = effectiveLiquidUsd
-    ? toDecimal(effectiveLiquidUsd)
-    : toDecimal(originalPlan.liquidReserveUsd);
+  const requiredLiquid = toDecimal(profile.minimumLiquidUsdtEquivalent);
+  const currentLiquid = effectiveLiquidUsdtEquivalent
+    ? toDecimal(effectiveLiquidUsdtEquivalent)
+    : toDecimal(originalPlan.liquidReserveUsdtEquivalent);
 
   if (currentLiquid.lt(requiredLiquid)) {
     shouldTrigger = true;
     checks.push({
       triggered: true,
       reason: "가용 비상금이 필수 안전 유동성 기준선 미만으로 하락 (minimum required reserve breach)",
-      originalMetric: `$${requiredLiquid.toFixed(2)} (필수)`,
-      currentMetric: `$${currentLiquid.toFixed(2)} (현재)`,
+      originalMetric: `${requiredLiquid.toFixed(2)} USDT-equivalent (필수)`,
+      currentMetric: `${currentLiquid.toFixed(2)} USDT-equivalent (현재)`,
       severity: "HIGH",
     });
   }
@@ -128,9 +128,9 @@ export function detectRebalanceOpportunity(
     .map((c) => `${c.reason} (${c.originalMetric} -> ${c.currentMetric})`)
     .join("; ");
 
-  const origReturn = originalPlan.expectedNetYieldUsd === null
+  const origReturn = originalPlan.expectedNetYieldUsdtEquivalent === null
     ? null
-    : toDecimal(originalPlan.expectedNetYieldUsd);
+    : toDecimal(originalPlan.expectedNetYieldUsdtEquivalent);
   const newReturn = simulatedNetYieldAvailable ? simulatedCurrentNetYield : null;
   const deltaReturn = origReturn !== null && newReturn !== null
     ? newReturn.minus(origReturn)
@@ -146,9 +146,9 @@ export function detectRebalanceOpportunity(
     checks,
     primaryReason,
     marketDeltaSummary: marketDeltaSummary || "시장 환경이 안정적인 허용 오차 내에서 유지 중입니다.",
-    originalExpectedReturnUsd: origReturn?.toFixed(2) ?? "UNAVAILABLE",
-    newExpectedReturnUsd: newReturn?.toFixed(2) ?? "UNAVAILABLE",
-    deltaReturnUsd: deltaReturn?.toFixed(2) ?? "UNAVAILABLE",
+    originalExpectedReturnUsdtEquivalent: origReturn?.toFixed(2) ?? "UNAVAILABLE",
+    newExpectedReturnUsdtEquivalent: newReturn?.toFixed(2) ?? "UNAVAILABLE",
+    deltaReturnUsdtEquivalent: deltaReturn?.toFixed(2) ?? "UNAVAILABLE",
     deltaReturnPct: deltaReturn === null ? "UNAVAILABLE" : `${deltaReturn.gte(0) ? "+" : ""}${deltaPct}%`,
     proposedPlan,
   };

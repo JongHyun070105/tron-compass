@@ -1,18 +1,18 @@
 import { Decimal, toDecimal, SafeMath } from "./decimal";
 
 /**
- * Calculates estimated yield in USD over a given investment horizon.
+ * Calculates estimated yield in the portfolio's USDT-equivalent denomination.
  * Formula (Annual Compounding):
  *   Yield = Principal * ((1 + APY) ^ (horizonDays / 365) - 1)
  *
  * If APY is 0 or negative, returns "0".
  */
 export function calculateHorizonYield(
-  principalUsd: string | number | Decimal,
+  principalValue: string | number | Decimal,
   apyRate: string | number | Decimal,
   horizonDays: number
 ): string {
-  const p = toDecimal(principalUsd);
+  const p = toDecimal(principalValue);
   const apy = toDecimal(apyRate);
 
   if (p.lte(0) || apy.lte(0) || horizonDays <= 0) {
@@ -31,15 +31,15 @@ export function calculateHorizonYield(
 
 /**
  * Calculates the net effective annual percentage yield (APY) given principal,
- * net earned USD, and horizon in days.
+ * net earned USDT-equivalent value, and horizon in days.
  */
 export function calculateEffectiveApy(
-  principalUsd: string | number | Decimal,
-  netReturnUsd: string | number | Decimal,
+  principalValue: string | number | Decimal,
+  netReturnValue: string | number | Decimal,
   horizonDays: number
 ): string {
-  const p = toDecimal(principalUsd);
-  const r = toDecimal(netReturnUsd);
+  const p = toDecimal(principalValue);
+  const r = toDecimal(netReturnValue);
 
   if (p.lte(0) || horizonDays <= 0) {
     return "0";
@@ -59,10 +59,10 @@ export function calculateEffectiveApy(
 }
 
 export interface YieldDecomposition {
-  baseYieldUsd: string;
-  incentiveYieldUsd: string | null;
-  totalCostUsd: string;
-  netYieldUsd: string | null;
+  baseYieldUsdtEquivalent: string;
+  incentiveYieldUsdtEquivalent: string | null;
+  totalCostUsdtEquivalent: string;
+  netYieldUsdtEquivalent: string | null;
   effectiveNetApy: string | null;
 }
 
@@ -70,40 +70,40 @@ export interface YieldDecomposition {
  * Decomposes yield into Base, Incentive, and Net after entry/exit costs.
  */
 export function decomposeLegYield(
-  usdValue: string,
+  valueUsdtEquivalent: string,
   baseApy: string,
   incentiveApy: string | null | undefined,
   horizonDays: number,
-  estimatedEntryCostUsd: string = "0",
-  estimatedExitCostUsd: string = "0"
+  estimatedEntryCostUsdtEquivalent: string = "0",
+  estimatedExitCostUsdtEquivalent: string = "0"
 ): YieldDecomposition {
-  const baseYieldUsd = calculateHorizonYield(usdValue, baseApy, horizonDays);
-  const totalCost = SafeMath.add(estimatedEntryCostUsd, estimatedExitCostUsd);
+  const baseYieldUsdtEquivalent = calculateHorizonYield(valueUsdtEquivalent, baseApy, horizonDays);
+  const totalCost = SafeMath.add(estimatedEntryCostUsdtEquivalent, estimatedExitCostUsdtEquivalent);
   if (incentiveApy === null || incentiveApy === undefined) {
     return {
-      baseYieldUsd,
-      incentiveYieldUsd: null,
-      totalCostUsd: totalCost.toFixed(4),
-      netYieldUsd: null,
+      baseYieldUsdtEquivalent,
+      incentiveYieldUsdtEquivalent: null,
+      totalCostUsdtEquivalent: totalCost.toFixed(4),
+      netYieldUsdtEquivalent: null,
       effectiveNetApy: null,
     };
   }
 
-  const incentiveYieldUsd = calculateHorizonYield(usdValue, incentiveApy, horizonDays);
-  const grossYield = SafeMath.add(baseYieldUsd, incentiveYieldUsd);
+  const incentiveYieldUsdtEquivalent = calculateHorizonYield(valueUsdtEquivalent, incentiveApy, horizonDays);
+  const grossYield = SafeMath.add(baseYieldUsdtEquivalent, incentiveYieldUsdtEquivalent);
   const netYield = grossYield.minus(totalCost);
 
   const effectiveNetApy = calculateEffectiveApy(
-    usdValue,
+    valueUsdtEquivalent,
     netYield.toString(),
     horizonDays
   );
 
   return {
-    baseYieldUsd,
-    incentiveYieldUsd,
-    totalCostUsd: totalCost.toFixed(4),
-    netYieldUsd: netYield.toFixed(4),
+    baseYieldUsdtEquivalent,
+    incentiveYieldUsdtEquivalent,
+    totalCostUsdtEquivalent: totalCost.toFixed(4),
+    netYieldUsdtEquivalent: netYield.toFixed(4),
     effectiveNetApy,
   };
 }

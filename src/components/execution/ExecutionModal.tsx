@@ -4,10 +4,10 @@ import React, { useState, useEffect, useRef } from "react";
 import { AllocationPlan, AllocationLeg } from "@/domain/allocation/types";
 import { NeedsProfile, YieldOpportunity } from "@/domain/allocation/types";
 import { evaluateDecisionRules } from "@/domain/allocation/rules";
-import { computeTotalCapitalUsd } from "@/domain/allocation/engine";
+import { computeTotalCapitalValue } from "@/domain/allocation/engine";
 import { DecisionReceipt, DecisionStopRecord, makeStopRecord, refreshDecisionReceiptIntegrity } from "@/domain/decision/receipt";
 import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
-import { fetchNileJTrxBalance, fetchTronWalletBalances, detectActiveTronNetwork } from "@/lib/tron/network";
+import { fetchNileJTrxBalance, fetchNileJTrxExchangeRate, fetchTronWalletBalances, detectActiveTronNetwork, estimateNileJTrxRedeemTrx } from "@/lib/tron/network";
 import {
   buildPreflightChecks,
   buildRedeemPreflightChecks,
@@ -21,9 +21,10 @@ import {
   PreflightResult,
   evaluateNileExecutionSafety,
   executeIfNileGatePasses,
+  computeBalanceDelta,
 } from "@/lib/tron/transaction";
 import { compassStorage } from "@/lib/persistence/storage";
-import { toDecimal } from "@/lib/math/decimal";
+import { Decimal, formatUnits, toDecimal } from "@/lib/math/decimal";
 import {
   X,
   ShieldCheck,
@@ -62,6 +63,31 @@ interface ExecutionModalProps {
   onDecisionReceiptUpdate?: (receipt: DecisionReceipt) => Promise<void> | void;
 }
 
+interface NileWalletSnapshot {
+  network: string;
+  trxBalance: string | null;
+  jTrxBalance: string | null;
+  exchangeRateRaw: string | null;
+}
+
+async function readNileWalletSnapshot(address: string, tronWeb: any): Promise<NileWalletSnapshot> {
+  const network = detectActiveTronNetwork(tronWeb);
+  if (!address || network.id !== "nile") {
+    return { network: network.name, trxBalance: null, jTrxBalance: null, exchangeRateRaw: null };
+  }
+  const [trx, jTrx, exchangeRate] = await Promise.all([
+    fetchTronWalletBalances(address, tronWeb, "nile"),
+    fetchNileJTrxBalance(address, tronWeb, "nile"),
+    fetchNileJTrxExchangeRate(tronWeb, "nile"),
+  ]);
+  return {
+    network: network.name,
+    trxBalance: trx.trx === "UNAVAILABLE" ? null : trx.trx,
+    jTrxBalance: jTrx,
+    exchangeRateRaw: exchangeRate?.raw ?? null,
+  };
+}
+
 export function ExecutionModal({
   isOpen,
   onClose,
@@ -91,6 +117,12 @@ export function ExecutionModal({
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [isTechnicalExpanded, setIsTechnicalExpanded] = useState<boolean>(false);
   const receiptRef = useRef<DecisionReceipt | null>(decisionReceipt);
+  const [liveTrxBalance, setLiveTrxBalance] = useState<string>(trxBalance);
+  const [liveJTrxBalance, setLiveJTrxBalance] = useState<string | null>(jTrxBalance);
+  const [activeWalletNetwork, setActiveWalletNetwork] = useState<string>(networkName);
+  const [exchangeRateRaw, setExchangeRateRaw] = useState<string | null>(null);
+  const [balanceRefreshState, setBalanceRefreshState] = useState<"IDLE" | "FETCHING" | "READY" | "FAILED">("IDLE");
+  const walletSnapshotRef = useRef<NileWalletSnapshot | null>(null);
 
   useEffect(() => {
     if (decisionReceipt && decisionReceipt.id !== receiptRef.current?.id) {
@@ -107,24 +139,63 @@ export function ExecutionModal({
     }
   }, [isOpen, initialMode]);
 
+  useEffect(() => {
+    if (!isOpen || isDemoMode) {
+      if (isDemoMode) {
+        setLiveTrxBalance("500.00");
+        setLiveJTrxBalance("250.00");
+        setActiveWalletNetwork("Nile Testnet · SIMULATED");
+      }
+      setBalanceRefreshState("IDLE");
+      walletSnapshotRef.current = null;
+      return;
+    }
+
+    let cancelled = false;
+    walletSnapshotRef.current = null;
+    setBalanceRefreshState("FETCHING");
+    setLiveTrxBalance("UNAVAILABLE");
+    setLiveJTrxBalance(null);
+    setExchangeRateRaw(null);
+    const tronWeb = (window as any).tronWeb;
+    readNileWalletSnapshot(walletAddress, tronWeb).then((snapshot) => {
+      if (cancelled) return;
+      setActiveWalletNetwork(snapshot.network);
+      setLiveTrxBalance(snapshot.trxBalance ?? "UNAVAILABLE");
+      setLiveJTrxBalance(snapshot.jTrxBalance);
+      setExchangeRateRaw(snapshot.exchangeRateRaw);
+      const ready = snapshot.network.toLowerCase().includes("nile") &&
+        snapshot.trxBalance !== null && snapshot.jTrxBalance !== null;
+      setBalanceRefreshState(ready ? "READY" : "FAILED");
+      walletSnapshotRef.current = ready ? snapshot : null;
+    }).catch(() => {
+      if (cancelled) return;
+      setActiveWalletNetwork(detectActiveTronNetwork(tronWeb).name);
+      setLiveTrxBalance("UNAVAILABLE");
+      setLiveJTrxBalance(null);
+      setBalanceRefreshState("FAILED");
+    });
+    return () => { cancelled = true; };
+  }, [isOpen, isDemoMode, walletAddress]);
+
   // Compute preflight dynamically based on active mode
   const preflight: PreflightResult =
     actionMode === "SUPPLY"
       ? buildPreflightChecks({
           isWalletConnected: isWalletConnected || isDemoMode,
           walletAddress: walletAddress || (isDemoMode ? "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb" : ""),
-          currentNetwork: isDemoMode ? "nile" : networkName,
-          trxBalance: isDemoMode ? "500.00" : trxBalance,
+          currentNetwork: isDemoMode ? "nile" : balanceRefreshState === "READY" ? activeWalletNetwork : "unknown",
+          trxBalance: isDemoMode ? "500.00" : liveTrxBalance,
           requiredAmount: supplyAmount,
           asset: "TRX",
         })
       : buildRedeemPreflightChecks({
           isWalletConnected: isWalletConnected || isDemoMode,
           walletAddress: walletAddress || (isDemoMode ? "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb" : ""),
-          currentNetwork: isDemoMode ? "nile" : networkName,
-          jTrxBalance: isDemoMode ? "250.00" : (jTrxBalance ?? "0"),
+          currentNetwork: isDemoMode ? "nile" : balanceRefreshState === "READY" ? activeWalletNetwork : "unknown",
+          jTrxBalance: isDemoMode ? "250.00" : (balanceRefreshState === "READY" ? liveJTrxBalance ?? "UNAVAILABLE" : "UNAVAILABLE"),
           requiredJTrxAmount: redeemAmount,
-          trxBalanceForFee: isDemoMode ? "500.00" : trxBalance,
+          trxBalanceForFee: isDemoMode ? "500.00" : liveTrxBalance,
         });
 
   const preview: ExecutionPreview =
@@ -253,8 +324,12 @@ export function ExecutionModal({
             contract: preview.targetContract,
             method: preview.method,
             callValue: actionMode === "SUPPLY" ? preview.amountRaw : null,
+            amountAsset: preview.asset,
+            amount: preview.amount,
+            amountRaw: preview.amountRaw,
             txHash: null,
             blockNumber: null,
+            contractResult: null,
             result: "SIMULATED",
           },
         });
@@ -280,23 +355,27 @@ export function ExecutionModal({
     const confirmed = !!decisionReceipt?.needsConfirmedAt && frozenRules.length > 0;
     const frozenProfile: NeedsProfile = { ...profile, investmentRules: frozenRules };
     let candidateAllocations = [...plan.allocations];
-    let resizedAmountHasUsdValue = true;
+    let resizedAmountHasUsdtEquivalentValue = actionMode !== "SUPPLY";
     if (actionMode === "SUPPLY") {
-      const legUnits = Number(leg.amount);
-      const dollarsPerUnit = Number.isFinite(legUnits) && legUnits > 0
-        ? Number(leg.usdValue) / legUnits
-        : Number.NaN;
-      resizedAmountHasUsdValue = Number.isFinite(dollarsPerUnit) && dollarsPerUnit > 0;
-      const amountUsd = resizedAmountHasUsdValue
-        ? toDecimal(supplyAmount).times(dollarsPerUnit).toFixed(2)
-        : "0.00";
-      const replacement = { ...leg, asset: "TRX", amount: supplyAmount, usdValue: amountUsd };
-      const selectedIndex = candidateAllocations.findIndex((item) => item.productId === leg.productId);
-      if (selectedIndex >= 0) candidateAllocations[selectedIndex] = replacement;
-      else candidateAllocations.push(replacement);
+      try {
+        const legUnits = new Decimal(leg.amount);
+        const legValue = new Decimal(leg.valueUsdtEquivalent);
+        const resizedUnits = new Decimal(supplyAmount);
+        resizedAmountHasUsdtEquivalentValue = legUnits.isFinite() && legUnits.gt(0) &&
+          legValue.isFinite() && legValue.gt(0) && resizedUnits.isFinite() && resizedUnits.gt(0);
+        if (resizedAmountHasUsdtEquivalentValue) {
+          const amountUsdtEquivalent = resizedUnits.times(legValue).div(legUnits).toFixed(2);
+          const replacement = { ...leg, asset: "TRX", amount: supplyAmount, valueUsdtEquivalent: amountUsdtEquivalent };
+          const selectedIndex = candidateAllocations.findIndex((item) => item.productId === leg.productId);
+          if (selectedIndex >= 0) candidateAllocations[selectedIndex] = replacement;
+          else candidateAllocations.push(replacement);
+        }
+      } catch {
+        resizedAmountHasUsdtEquivalentValue = false;
+      }
     }
-    const ruleResult = confirmed && resizedAmountHasUsdValue
-      ? evaluateDecisionRules(frozenProfile, computeTotalCapitalUsd(frozenProfile), candidateAllocations, opportunities)
+    const ruleResult = confirmed && resizedAmountHasUsdtEquivalentValue
+      ? evaluateDecisionRules(frozenProfile, computeTotalCapitalValue(frozenProfile), candidateAllocations, opportunities)
       : { passed: false, checks: [] };
     const failedRule = ruleResult.checks.find((item) => !item.passed);
     const rawRequired = failedRule?.required.replace(/^[<>]=?\s*/, "") ?? "confirmed My Rules";
@@ -305,9 +384,9 @@ export function ExecutionModal({
         ? { ruleId: failedRule.ruleId ?? failedRule.key, actual: failedRule.actual, required: rawRequired, reason: failedRule.detail }
         : undefined
       : { ruleId: "RULES_UNCONFIRMED", actual: "unconfirmed", required: "confirmed My Rules" };
-    const finalRuleViolation = resizedAmountHasUsdValue
+    const finalRuleViolation = resizedAmountHasUsdtEquivalentValue
       ? ruleViolation
-      : { ruleId: "VALUATION_UNAVAILABLE", actual: "UNKNOWN", required: "sourced USD valuation" };
+      : { ruleId: "VALUATION_UNAVAILABLE", actual: "UNKNOWN", required: "source-backed USDT-equivalent valuation" };
 
     const planIds = new Set(plan.allocations.map((item) => item.productId));
     const requiredMarketEvidence = opportunities
@@ -326,11 +405,7 @@ export function ExecutionModal({
       });
     }
     const valuationEvidence = frozenProfile.holdings
-      .filter((holding) => Number(holding.amount) > 0)
-      .map((holding) => ({
-        fetchedAt: holding.usdValuation?.fetchedAt ?? null,
-        reality: holding.usdValuation?.reality ?? "SNAPSHOT" as const,
-      }));
+      .map((holding) => ({ holding, valuation: holding.valuation }));
 
     const tronWeb = (window as any).tronWeb;
     const activeNetwork = detectActiveTronNetwork(tronWeb).name;
@@ -368,21 +443,6 @@ export function ExecutionModal({
       return;
     }
 
-    if (decisionReceipt) {
-      await persistReceipt({
-        ...decisionReceipt,
-        approval: { shown: approvalShown, signer: walletAddress || null, approvedAt: now },
-        execution: {
-          ...decisionReceipt.execution,
-          network: "NILE",
-          contract: preview.targetContract,
-          method: preview.method,
-          callValue: actionMode === "SUPPLY" ? preview.amountRaw : null,
-          result: "AWAITING_SIGNATURE",
-        },
-      });
-    }
-
     try {
       const finalGate = evaluateNileExecutionSafety({
         network: detectActiveTronNetwork((window as any).tronWeb).name || networkName,
@@ -402,6 +462,57 @@ export function ExecutionModal({
         if (decisionReceipt) await persistReceipt({ ...decisionReceipt, stops: [...decisionReceipt.stops, ...finalGate.stops] });
         return;
       }
+      const reviewedBalances = walletSnapshotRef.current;
+      const balancesBefore = await readNileWalletSnapshot(walletAddress, tronWeb);
+      const decimalBalancesMatch = (left: string | null | undefined, right: string | null | undefined) => {
+        if (!left || !right) return false;
+        try { return new Decimal(left).eq(new Decimal(right)); } catch { return false; }
+      };
+      const balanceReadReady = balancesBefore.network.toLowerCase().includes("nile") &&
+        balancesBefore.trxBalance !== null && balancesBefore.jTrxBalance !== null;
+      const balancesMatchReviewed = !!reviewedBalances && balanceReadReady &&
+        decimalBalancesMatch(reviewedBalances.trxBalance, balancesBefore.trxBalance) &&
+        decimalBalancesMatch(reviewedBalances.jTrxBalance, balancesBefore.jTrxBalance) &&
+        (actionMode !== "REDEEM" || reviewedBalances.exchangeRateRaw === balancesBefore.exchangeRateRaw);
+      if (!balanceReadReady || !balancesMatchReviewed) {
+        if (balanceReadReady) {
+          walletSnapshotRef.current = balancesBefore;
+          setLiveTrxBalance(balancesBefore.trxBalance!);
+          setLiveJTrxBalance(balancesBefore.jTrxBalance!);
+          setExchangeRateRaw(balancesBefore.exchangeRateRaw);
+        }
+        const reason = !balanceReadReady
+          ? "Live Nile balances unavailable — execution paused."
+          : "Wallet balances or the jTRX exchange rate changed after review. Review the refreshed Nile values before signing.";
+        const stop = makeStopRecord({
+          timestamp: new Date().toISOString(),
+          stage: "PRE_SIGN",
+          ruleId: null,
+          guardId: !balanceReadReady ? "NILE_BALANCE_UNAVAILABLE" : "NILE_BALANCE_CHANGED",
+          attemptedAction: actionMode,
+          attemptedAmount: `${preview.amount} ${preview.asset}`,
+          reason,
+        });
+        setLifecycleState("STOPPED");
+        setStatusMessage(`STOPPED · ${reason}`);
+        if (decisionReceipt) await persistReceipt({ ...decisionReceipt, stops: [...decisionReceipt.stops, stop] });
+        return;
+      }
+      if (decisionReceipt) await persistReceipt({
+        ...decisionReceipt,
+        approval: { shown: approvalShown, signer: walletAddress || null, approvedAt: now },
+        execution: {
+          ...decisionReceipt.execution,
+          network: "NILE",
+          contract: preview.targetContract,
+          method: preview.method,
+          callValue: actionMode === "SUPPLY" ? preview.amountRaw : null,
+          amountAsset: preview.asset,
+          amount: preview.amount,
+          amountRaw: preview.amountRaw,
+          result: "AWAITING_SIGNATURE",
+        },
+      });
       setLifecycleState("AWAITING_WALLET_SIGNATURE");
       setStatusMessage("TronLink 서명 대기 중입니다. 승인 전 실제 수량과 컨트랙트를 지갑 창에서도 확인해 주세요.");
       const guarded = await executeIfNileGatePasses(finalGate, () =>
@@ -437,6 +548,9 @@ export function ExecutionModal({
           contract: preview.targetContract,
           method: preview.method,
           callValue: actionMode === "SUPPLY" ? preview.amountRaw : null,
+          amountAsset: preview.asset,
+          amount: preview.amount,
+          amountRaw: preview.amountRaw,
           txHash: res.txHash,
           result: "BROADCAST",
         },
@@ -453,9 +567,10 @@ export function ExecutionModal({
       if (pollRes.status === "CONFIRMED") {
         setLifecycleState("CONFIRMED");
         setStatusMessage("TronGrid confirmed the Nile block inclusion and successful execution.");
-        const afterBalance = actionMode === "SUPPLY"
-          ? (await fetchTronWalletBalances(walletAddress, tronWeb, "nile")).trx
-          : (await fetchNileJTrxBalance(walletAddress, tronWeb, "nile")) ?? null;
+        const balancesAfter = await readNileWalletSnapshot(walletAddress, tronWeb);
+        const actualFee = pollRes.feeSun === undefined
+          ? null
+          : `${formatUnits(String(pollRes.feeSun), 6)} TRX`;
         if (decisionReceipt) await persistReceipt({
           ...decisionReceipt,
           execution: {
@@ -466,10 +581,19 @@ export function ExecutionModal({
             callValue: actionMode === "SUPPLY" ? preview.amountRaw : null,
             txHash: res.txHash,
             blockNumber: pollRes.blockNumber ?? null,
+            contractResult: pollRes.contractResult ?? null,
             result: "CONFIRMED",
-            actualFee: null,
-            balanceBefore: actionMode === "SUPPLY" ? trxBalance : jTrxBalance,
-            balanceAfter: afterBalance,
+            actualFee,
+            balanceBefore: actionMode === "SUPPLY" ? balancesBefore.trxBalance : balancesBefore.jTrxBalance,
+            balanceAfter: actionMode === "SUPPLY" ? balancesAfter.trxBalance : balancesAfter.jTrxBalance,
+            trxBalanceBefore: balancesBefore.trxBalance,
+            trxBalanceAfter: balancesAfter.trxBalance,
+            jTrxBalanceBefore: balancesBefore.jTrxBalance,
+            jTrxBalanceAfter: balancesAfter.jTrxBalance,
+            trxBalanceDelta: computeBalanceDelta(balancesBefore.trxBalance, balancesAfter.trxBalance, 6),
+            jTrxBalanceDelta: computeBalanceDelta(balancesBefore.jTrxBalance, balancesAfter.jTrxBalance, 8),
+            balanceReality: balancesBefore.trxBalance !== null && balancesBefore.jTrxBalance !== null &&
+              balancesAfter.trxBalance !== null && balancesAfter.jTrxBalance !== null ? "NILE_LIVE" : null,
           },
         });
         await compassStorage.recordExecution({
@@ -533,6 +657,9 @@ export function ExecutionModal({
   };
 
   const currentStepNum = getStepStatus();
+  const estimatedRedeemTrx = actionMode === "REDEEM" && exchangeRateRaw
+    ? estimateNileJTrxRedeemTrx(redeemAmount, exchangeRateRaw)
+    : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
@@ -665,7 +792,7 @@ export function ExecutionModal({
               </div>
               <div>
                 <span className="text-slate-400 block text-[11px]">네트워크</span>
-                  <span className="text-purple-700 font-semibold text-sm">Nile Testnet · connected: {isDemoMode ? "SIMULATED" : networkName}</span>
+                  <span className="text-purple-700 font-semibold text-sm">{isDemoMode ? "Nile Testnet · SIMULATED" : balanceRefreshState === "READY" ? activeWalletNetwork : balanceRefreshState === "FETCHING" ? "Refreshing connected network…" : activeWalletNetwork}</span>
               </div>
               <div>
                 <span className="text-slate-400 block text-[11px]">
@@ -675,16 +802,32 @@ export function ExecutionModal({
                   {actionMode === "SUPPLY"
                     ? isDemoMode
                       ? "SIMULATED · 500.00 TRX"
-                      : `${trxBalance} TRX`
+                      : balanceRefreshState === "FETCHING" ? "Refreshing Nile balance…" : `${liveTrxBalance} TRX`
                     : isDemoMode
                     ? "SIMULATED · 250.00 jTRX"
-                    : jTrxBalance === null ? "UNAVAILABLE" : `${jTrxBalance} jTRX`}
+                    : balanceRefreshState === "FETCHING" ? "Refreshing Nile balance…" : liveJTrxBalance === null ? "UNAVAILABLE" : `${liveJTrxBalance} jTRX`}
                 </span>
               </div>
               <div>
                 <span className="text-slate-400 block text-[11px]">수수료 안내</span>
                 <span className="text-slate-600 text-[11px]">{preview.estimatedFeeTrx} · actual fee unavailable</span>
               </div>
+              <div className="col-span-2">
+                <span className="text-slate-400 block text-[11px]">연결 지갑</span>
+                <span className="font-mono font-semibold text-xs text-slate-800 break-all">{isDemoMode ? "SIMULATED wallet" : isWalletConnected ? walletAddress : "Not connected"}</span>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2 text-[11px]">
+              <div className="flex justify-between gap-3"><span className="text-slate-500">요청 수량 / 단위</span><strong className="text-right font-mono text-slate-900">{preview.amount} {preview.asset} · {preview.amountRaw} base units</strong></div>
+              {actionMode === "REDEEM" && <div className="flex justify-between gap-3"><span className="text-slate-500">예상 반환량</span><strong className="text-right text-slate-900">{estimatedRedeemTrx === null ? "Unavailable" : `≈ ${estimatedRedeemTrx} TRX`}</strong></div>}
+              {actionMode === "REDEEM" && <p className="text-[10px] leading-relaxed text-slate-500">{estimatedRedeemTrx === null ? "Nile exchangeRateStored is unavailable; no return estimate is shown." : "Approximation from the current Nile jTRX exchangeRateStored. The contract result may differ; this is not a guaranteed return."}</p>}
+              <div className="flex justify-between gap-3"><span className="text-slate-500">Contract</span><code className="text-right text-[10px] text-slate-800 break-all">{preview.targetContract}</code></div>
+              <div className="flex justify-between gap-3"><span className="text-slate-500">Method</span><code className="text-right text-slate-800">{preview.method}</code></div>
+              <div><span className="text-slate-500">Risk</span><p className="mt-0.5 text-slate-800">{preview.riskNotice}</p></div>
+              <div><span className="text-slate-500">Approval scope</span><p className="mt-0.5 text-slate-800">{preview.approvalScope}</p></div>
+              {!isDemoMode && balanceRefreshState === "FETCHING" && <p className="text-amber-700">Refreshing live Nile TRX and jTRX balances before review…</p>}
+              {!isDemoMode && balanceRefreshState === "FAILED" && <p className="text-rose-700">Live Nile balances are unavailable. Signing is paused.</p>}
             </div>
 
             {/* Amount Adjuster */}

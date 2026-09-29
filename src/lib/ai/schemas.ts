@@ -11,7 +11,7 @@ export const GoalSchema = z.enum(["LIQUIDITY", "BALANCED", "YIELD"]);
 export const ExtractedProfileSchema = z.object({
   holdings: z.array(HoldingSchema).default([]),
   horizonDays: z.number().int().positive().nullable().default(90),
-  minimumLiquidUsd: z.string().nullable().default("300"),
+  minimumLiquidUsdtEquivalent: z.string().nullable().default("300"),
   riskLevel: RiskLevelSchema.nullable().default("LOW"),
   maxVolatileExposurePct: z.string().nullable().default("0.20"),
   goal: GoalSchema.nullable().default("BALANCED"),

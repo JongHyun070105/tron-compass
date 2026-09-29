@@ -9,10 +9,10 @@ import { decomposeLegYield } from "@/lib/math/yield";
 import { Decimal, SafeMath, toDecimal, toPercentString } from "@/lib/math/decimal";
 import { evaluateUsddDecisionSignal, UsddDecisionSignal } from "./usdd-signals";
 import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
-import { getHoldingUsdPerUnit, getHoldingUsdValue, getPortfolioUsdValue, getUsdValuationStatus } from "./valuation";
+import { getHoldingValuePerUnit, getHoldingValue, getPortfolioValue, getValuationStatus } from "./valuation";
 
-export function computeTotalCapitalUsd(profile: NeedsProfile): string {
-  return getPortfolioUsdValue(profile) ?? "0.00";
+export function computeTotalCapitalValue(profile: NeedsProfile, now: number = Date.now()): string {
+  return getPortfolioValue(profile, now) ?? "0.00";
 }
 
 export function generateAllocationPlans(
@@ -22,12 +22,14 @@ export function generateAllocationPlans(
   usddEvidence?: UsddProtocolEvidence | null
 ): {
   plans: AllocationPlan[];
-  totalCapitalUsd: string;
+  totalCapitalUsdtEquivalent: string;
   usddSignal: UsddDecisionSignal;
 } {
-  const totalCapitalUsd = computeTotalCapitalUsd(profile);
-  const totalCap = toDecimal(totalCapitalUsd);
-  const minLiquid = toDecimal(profile.minimumLiquidUsd || "0");
+  const parsedTimestamp = Date.parse(timestamp);
+  const evaluationAt = Number.isFinite(parsedTimestamp) ? parsedTimestamp : Date.now();
+  const totalCapitalUsdtEquivalent = computeTotalCapitalValue(profile, evaluationAt);
+  const totalCap = toDecimal(totalCapitalUsdtEquivalent);
+  const minLiquid = toDecimal(profile.minimumLiquidUsdtEquivalent || "0");
   const maxAllocatable = totalCap.minus(minLiquid);
 
   // Evaluate verified USDD decision signal
@@ -78,10 +80,10 @@ export function generateAllocationPlans(
       continue;
     }
 
-    const price = getHoldingUsdPerUnit(h);
-    const holdingUsdValue = getHoldingUsdValue(h);
-    if (!price || price.lte(0) || holdingUsdValue === null) continue;
-    const holdingVal = toDecimal(holdingUsdValue);
+    const price = getHoldingValuePerUnit(h, evaluationAt);
+    const holdingValue = getHoldingValue(h, evaluationAt);
+    if (!price || price.lte(0) || holdingValue === null) continue;
+    const holdingVal = toDecimal(holdingValue);
 
     // Find best opportunity for this asset
     const opp = activeOpps.find((o) => o.asset === h.asset && o.priceRiskClass === "LOW") ||
@@ -112,8 +114,8 @@ export function generateAllocationPlans(
       opp.baseApy,
       opp.incentiveApy,
       horizonDays,
-      opp.estimatedEntryCostUsd,
-      opp.estimatedExitCostUsd
+      opp.estimatedEntryCostUsdtEquivalent,
+      opp.estimatedExitCostUsdtEquivalent
     );
 
     planAAllocations.push({
@@ -122,17 +124,17 @@ export function generateAllocationPlans(
       productName: opp.product,
       protocol: opp.protocol,
       amount: allocAmount.toFixed(4),
-      usdValue: allocVal.toFixed(2),
+      valueUsdtEquivalent: allocVal.toFixed(2),
       allocationPct: totalCap.gt(0)
         ? allocVal.div(totalCap).toFixed(4)
         : "0",
       baseApy: opp.baseApy,
       incentiveApy: opp.incentiveApy,
       totalApy: opp.totalApy,
-      baseYieldEstimateUsd: decomp.baseYieldUsd,
-      incentiveYieldEstimateUsd: decomp.incentiveYieldUsd,
-      estimatedCostUsd: decomp.totalCostUsd,
-      netYieldEstimateUsd: decomp.netYieldUsd,
+      baseYieldEstimateUsdtEquivalent: decomp.baseYieldUsdtEquivalent,
+      incentiveYieldEstimateUsdtEquivalent: decomp.incentiveYieldUsdtEquivalent,
+      estimatedCostUsdtEquivalent: decomp.totalCostUsdtEquivalent,
+      netYieldEstimateUsdtEquivalent: decomp.netYieldUsdtEquivalent,
       executable: opp.executable,
       executabilityClass: opp.executabilityClass || (opp.executable ? "NILE_EXECUTABLE" : "LIVE_DATA_ONLY"),
       executabilityLabel: opp.executabilityLabel || (opp.executable ? "실행 가능 (Nile에서 직접 테스트 가능)" : "분석 전용 (Mainnet 시장 데이터 기반)"),
@@ -164,10 +166,10 @@ export function generateAllocationPlans(
       continue;
     }
 
-    const price = getHoldingUsdPerUnit(h);
-    const holdingUsdValue = getHoldingUsdValue(h);
-    if (!price || price.lte(0) || holdingUsdValue === null) continue;
-    const holdingVal = toDecimal(holdingUsdValue);
+    const price = getHoldingValuePerUnit(h, evaluationAt);
+    const holdingValue = getHoldingValue(h, evaluationAt);
+    if (!price || price.lte(0) || holdingValue === null) continue;
+    const holdingVal = toDecimal(holdingValue);
 
     // Find matching opportunity
     const opp = activeOpps.find((o) => o.asset === h.asset);
@@ -195,8 +197,8 @@ export function generateAllocationPlans(
       opp.baseApy,
       opp.incentiveApy,
       horizonDays,
-      opp.estimatedEntryCostUsd,
-      opp.estimatedExitCostUsd
+      opp.estimatedEntryCostUsdtEquivalent,
+      opp.estimatedExitCostUsdtEquivalent
     );
 
     planBAllocations.push({
@@ -205,17 +207,17 @@ export function generateAllocationPlans(
       productName: opp.product,
       protocol: opp.protocol,
       amount: allocAmount.toFixed(4),
-      usdValue: allocVal.toFixed(2),
+      valueUsdtEquivalent: allocVal.toFixed(2),
       allocationPct: totalCap.gt(0)
         ? allocVal.div(totalCap).toFixed(4)
         : "0",
       baseApy: opp.baseApy,
       incentiveApy: opp.incentiveApy,
       totalApy: opp.totalApy,
-      baseYieldEstimateUsd: decomp.baseYieldUsd,
-      incentiveYieldEstimateUsd: decomp.incentiveYieldUsd,
-      estimatedCostUsd: decomp.totalCostUsd,
-      netYieldEstimateUsd: decomp.netYieldUsd,
+      baseYieldEstimateUsdtEquivalent: decomp.baseYieldUsdtEquivalent,
+      incentiveYieldEstimateUsdtEquivalent: decomp.incentiveYieldUsdtEquivalent,
+      estimatedCostUsdtEquivalent: decomp.totalCostUsdtEquivalent,
+      netYieldEstimateUsdtEquivalent: decomp.netYieldUsdtEquivalent,
       executable: opp.executable,
       executabilityClass: opp.executabilityClass || (opp.executable ? "NILE_EXECUTABLE" : "LIVE_DATA_ONLY"),
       executabilityLabel: opp.executabilityLabel || (opp.executable ? "실행 가능 (Nile에서 직접 테스트 가능)" : "분석 전용 (Mainnet 시장 데이터 기반)"),
@@ -245,20 +247,20 @@ export function generateAllocationPlans(
     let netYieldAvailable = true;
 
     for (const leg of allocations) {
-      totalAlloc = totalAlloc.plus(toDecimal(leg.usdValue));
-      totalBaseYield = totalBaseYield.plus(toDecimal(leg.baseYieldEstimateUsd));
-      if (leg.incentiveYieldEstimateUsd === null) {
+      totalAlloc = totalAlloc.plus(toDecimal(leg.valueUsdtEquivalent));
+      totalBaseYield = totalBaseYield.plus(toDecimal(leg.baseYieldEstimateUsdtEquivalent));
+      if (leg.incentiveYieldEstimateUsdtEquivalent === null) {
         incentiveYieldAvailable = false;
       } else {
         totalIncentiveYield = totalIncentiveYield.plus(
-          toDecimal(leg.incentiveYieldEstimateUsd)
+          toDecimal(leg.incentiveYieldEstimateUsdtEquivalent)
         );
       }
-      totalCosts = totalCosts.plus(toDecimal(leg.estimatedCostUsd));
-      if (leg.netYieldEstimateUsd === null) {
+      totalCosts = totalCosts.plus(toDecimal(leg.estimatedCostUsdtEquivalent));
+      if (leg.netYieldEstimateUsdtEquivalent === null) {
         netYieldAvailable = false;
       } else {
-        totalNetYield = totalNetYield.plus(toDecimal(leg.netYieldEstimateUsd));
+        totalNetYield = totalNetYield.plus(toDecimal(leg.netYieldEstimateUsdtEquivalent));
       }
     }
 
@@ -269,9 +271,10 @@ export function generateAllocationPlans(
 
     const constraintEval = evaluateDecisionRules(
       profile,
-      totalCapitalUsd,
+      totalCapitalUsdtEquivalent,
       allocations,
-      opportunities
+      opportunities,
+      evaluationAt
     );
 
     const netApy = netYieldAvailable && totalAlloc.gt(0)
@@ -284,13 +287,13 @@ export function generateAllocationPlans(
     // Build concise, deterministic reasons
     const deterministicReasons: string[] = [
       allocations.length === 0
-        ? getUsdValuationStatus(profile) === "UNAVAILABLE"
-          ? "USD valuation evidence is unavailable; no allocation was generated."
+        ? getValuationStatus(profile, evaluationAt) === "UNAVAILABLE"
+          ? "Live USDT-equivalent valuation is unavailable; no allocation was generated."
           : "No allocation was generated because available evidence and confirmed rules did not support one."
-        : `Estimated unallocated reserve is $${liquidReserve.toFixed(2)}; withdrawal availability depends on wallet balance, pool liquidity, and transaction resources.`,
+        : `Estimated unallocated reserve is ${liquidReserve.toFixed(2)} USDT-equivalent; withdrawal availability depends on wallet balance, pool liquidity, and transaction resources.`,
       profile.protectionClause
         ? `보호 조건 준수: ${profile.protectionClause}`
-        : `The confirmed maximum volatile exposure is ${(parseFloat(profile.maxVolatileExposurePct || "0.20") * 100).toFixed(0)}%.`,
+        : `The confirmed maximum volatile exposure is ${toPercentString(profile.maxVolatileExposurePct || "0.20")}.`,
       "Exit timing depends on pool liquidity and transaction resources; immediate or fee-free withdrawal is not guaranteed.",
       usddSignal.reason,
       strategyType === "LIQUIDITY_FIRST"
@@ -311,15 +314,15 @@ export function generateAllocationPlans(
       description,
       createdAt: timestamp,
       horizonDays,
-      totalCapitalUsd,
-      usdValuationStatus: getUsdValuationStatus(profile),
-      liquidReserveUsd: liquidReserve.toFixed(2),
+      totalCapitalUsdtEquivalent,
+      valuationStatus: getValuationStatus(profile, evaluationAt),
+      liquidReserveUsdtEquivalent: liquidReserve.toFixed(2),
       liquidReservePct: toPercentString(liquidReservePct),
       allocations,
-      expectedBaseYieldUsd: totalBaseYield.toFixed(2),
-      expectedIncentiveYieldUsd: incentiveYieldAvailable ? totalIncentiveYield.toFixed(2) : null,
-      estimatedTotalCostUsd: totalCosts.toFixed(2),
-      expectedNetYieldUsd: netYieldAvailable ? totalNetYield.toFixed(2) : null,
+      expectedBaseYieldUsdtEquivalent: totalBaseYield.toFixed(2),
+      expectedIncentiveYieldUsdtEquivalent: incentiveYieldAvailable ? totalIncentiveYield.toFixed(2) : null,
+      estimatedTotalCostUsdtEquivalent: totalCosts.toFixed(2),
+      expectedNetYieldUsdtEquivalent: netYieldAvailable ? totalNetYield.toFixed(2) : null,
       effectiveNetApy: netApy === null ? null : toPercentString(netApy),
       liquidityScore: baseLiquidityScore,
       riskScore: adjustedRiskScore,
@@ -374,7 +377,7 @@ export function generateAllocationPlans(
 
   return {
     plans: [planA, planB],
-    totalCapitalUsd,
+    totalCapitalUsdtEquivalent,
     usddSignal,
   };
 }

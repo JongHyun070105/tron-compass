@@ -4,47 +4,48 @@ import {
   AllocationLeg,
   ConstraintCheckResult,
 } from "./types";
-import { SafeMath, toDecimal, toPercentString, toUsdString } from "@/lib/math/decimal";
+import { SafeMath, toDecimal, toPercentString } from "@/lib/math/decimal";
 import { getRuleForType } from "./rules";
-import { hasCompleteUsdValuation } from "./valuation";
+import { hasCompleteValuation } from "./valuation";
 
 export function evaluateHardConstraints(
   profile: NeedsProfile,
-  totalCapitalUsd: string,
+  totalCapitalUsdtEquivalent: string,
   allocations: AllocationLeg[],
-  opportunities: YieldOpportunity[]
+  opportunities: YieldOpportunity[],
+  now: number = Date.now()
 ): {
   passed: boolean;
   checks: ConstraintCheckResult[];
 } {
   const checks: ConstraintCheckResult[] = [];
   let allPassed = true;
-  const valuationComplete = hasCompleteUsdValuation(profile);
+  const valuationComplete = hasCompleteValuation(profile, now);
 
-  const totalCap = toDecimal(totalCapitalUsd);
+  const totalCap = toDecimal(totalCapitalUsdtEquivalent);
   const liquidityRule = getRuleForType(profile.investmentRules, "MINIMUM_LIQUIDITY");
   const volatileRule = getRuleForType(profile.investmentRules, "MAX_VOLATILE_EXPOSURE");
-  const minLiquid = toDecimal(liquidityRule?.value ?? profile.minimumLiquidUsd);
+  const minLiquid = toDecimal(liquidityRule?.value ?? profile.minimumLiquidUsdtEquivalent);
 
   if (!valuationComplete) allPassed = false;
   checks.push({
-    key: "USD_VALUATION_EVIDENCE",
-    name: "USD Valuation Evidence",
+    key: "USDT_EQUIVALENT_VALUATION_EVIDENCE",
+    name: "USDT-equivalent Valuation Evidence",
     passed: valuationComplete,
-    required: "Every holding needs an explicit sourced USD valuation",
+    required: "Every holding needs a fresh live JustLend USDT-equivalent valuation",
     actual: valuationComplete ? "Available" : "UNKNOWN",
     detail: valuationComplete
-      ? "Every holding has an explicit USD value and recorded source/reality."
-      : "One or more holdings lack a sourced USD valuation; exposure and reserve checks cannot be trusted.",
+      ? "Every user-declared holding has a fresh value from the same live JustLend mainnet snapshot."
+      : "One or more holdings lack a fresh live USDT-equivalent valuation; exposure and reserve checks cannot be trusted.",
   });
 
   // 1. Calculate allocated capital and remaining liquid reserve
-  let totalAllocatedUsd = toDecimal(0);
-  let volatileAllocatedUsd = toDecimal(0);
+  let totalAllocatedValue = toDecimal(0);
+  let volatileAllocatedValue = toDecimal(0);
 
   for (const leg of allocations) {
-    const legVal = toDecimal(leg.usdValue);
-    totalAllocatedUsd = totalAllocatedUsd.plus(legVal);
+    const legVal = toDecimal(leg.valueUsdtEquivalent);
+    totalAllocatedValue = totalAllocatedValue.plus(legVal);
 
     const opp = opportunities.find((o) => o.id === leg.productId);
     const isVolatile = opp
@@ -52,14 +53,14 @@ export function evaluateHardConstraints(
       : !["USDD", "USDT", "USD1", "TUSD"].includes(leg.asset);
 
     if (isVolatile) {
-      volatileAllocatedUsd = volatileAllocatedUsd.plus(legVal);
+      volatileAllocatedValue = volatileAllocatedValue.plus(legVal);
     }
   }
 
-  const liquidReserveUsd = totalCap.minus(totalAllocatedUsd);
+  const liquidReserveUsdtEquivalent = totalCap.minus(totalAllocatedValue);
 
   // Check 1: Minimum Liquid Reserve (Hard constraint)
-  const passedLiquid = valuationComplete && liquidReserveUsd.gte(minLiquid);
+  const passedLiquid = valuationComplete && liquidReserveUsdtEquivalent.gte(minLiquid);
   if (!passedLiquid) allPassed = false;
   checks.push({
     key: "MIN_LIQUIDITY",
@@ -67,19 +68,19 @@ export function evaluateHardConstraints(
     passed: passedLiquid,
     ruleId: liquidityRule?.id,
     ruleVersion: liquidityRule?.version,
-    required: `>= ${toUsdString(minLiquid.toString())}`,
-    actual: valuationComplete ? toUsdString(liquidReserveUsd.toString()) : "UNKNOWN",
+    required: `>= ${minLiquid.toFixed(2)} USDT-equivalent`,
+    actual: valuationComplete ? `${liquidReserveUsdtEquivalent.toFixed(2)} USDT-equivalent` : "UNKNOWN",
     detail: passedLiquid
-      ? `Maintains ${toUsdString(liquidReserveUsd.toString())} in reserve, exceeding required ${toUsdString(minLiquid.toString())}.`
+      ? `Maintains ${liquidReserveUsdtEquivalent.toFixed(2)} USDT-equivalent in reserve, exceeding required ${minLiquid.toFixed(2)} USDT-equivalent.`
       : valuationComplete
-        ? `Liquid reserve ${toUsdString(liquidReserveUsd.toString())} falls below required ${toUsdString(minLiquid.toString())}.`
-        : "Cannot evaluate the liquid reserve because USD valuation evidence is unavailable.",
+        ? `Liquid reserve ${liquidReserveUsdtEquivalent.toFixed(2)} USDT-equivalent falls below required ${minLiquid.toFixed(2)} USDT-equivalent.`
+        : "Cannot evaluate the liquid reserve because live USDT-equivalent valuation evidence is unavailable.",
   });
 
   // Check 2: Maximum Volatile Asset Exposure (Hard constraint)
   const maxVolatilePct = toDecimal(volatileRule?.value ?? profile.maxVolatileExposurePct);
   const actualVolatilePct = totalCap.gt(0)
-    ? volatileAllocatedUsd.div(totalCap)
+    ? volatileAllocatedValue.div(totalCap)
     : toDecimal(0);
 
   const passedVolatile = valuationComplete && actualVolatilePct.lte(maxVolatilePct.plus(0.0001)); // epsilon tolerance
@@ -96,7 +97,7 @@ export function evaluateHardConstraints(
       ? `Volatile exposure is ${toPercentString(actualVolatilePct.toString())}, strictly within user limit of ${toPercentString(maxVolatilePct.toString())}.`
       : valuationComplete
         ? `Volatile exposure of ${toPercentString(actualVolatilePct.toString())} exceeds maximum permitted limit ${toPercentString(maxVolatilePct.toString())}.`
-        : "Cannot evaluate volatile exposure because USD valuation evidence is unavailable.",
+        : "Cannot evaluate volatile exposure because live USDT-equivalent valuation evidence is unavailable.",
   });
 
   // Check 3: Holding Capacity Limits (Cannot allocate more than owned)

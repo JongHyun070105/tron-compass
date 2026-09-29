@@ -21,6 +21,7 @@ import {
   evaluateDecisionAssumptions,
 } from "@/domain/decision/receipt";
 import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
+import { toDecimal } from "@/lib/math/decimal";
 
 interface ReplayMonitorProps {
   originalPlan: AllocationPlan | null;
@@ -43,7 +44,7 @@ export function ReplayMonitor({
 }: ReplayMonitorProps) {
   const [activeScenarioId, setActiveScenarioId] = useState<string | null>(null);
   const [simulatedOpps, setSimulatedOpps] = useState<YieldOpportunity[]>(liveOpportunities);
-  const [simulatedLiquidUsd, setSimulatedLiquidUsd] = useState<string | undefined>(undefined);
+  const [simulatedLiquidUsdtEquivalent, setSimulatedLiquidUsdtEquivalent] = useState<string | undefined>(undefined);
   const [reviewedAssumptions, setReviewedAssumptions] = useState<DecisionAssumption[]>(decisionReceipt?.assumptions ?? []);
 
   if (!originalPlan || !profile) {
@@ -59,23 +60,25 @@ export function ReplayMonitor({
     originalPlan,
     profile,
     simulatedOpps,
-    simulatedLiquidUsd
+    simulatedLiquidUsdtEquivalent
   );
 
   const handleRunScenario = (scenario: ReplayScenario) => {
     setActiveScenarioId(scenario.id);
     const updated = scenario.simulatedMarketDelta(liveOpportunities);
     setSimulatedOpps(updated);
-    const liquid = scenario.id === "scenario-liquidity-shortfall"
-      ? Math.max(0, Number(profile?.minimumLiquidUsd ?? 0) - 1).toFixed(2)
-      : undefined;
-    setSimulatedLiquidUsd(liquid);
+    let liquid: string | undefined;
+    if (scenario.id === "scenario-liquidity-shortfall") {
+      const reducedReserve = toDecimal(profile.minimumLiquidUsdtEquivalent).minus(1);
+      liquid = (reducedReserve.gt(0) ? reducedReserve : toDecimal(0)).toFixed(2);
+    }
+    setSimulatedLiquidUsdtEquivalent(liquid);
     const now = new Date().toISOString();
     const currentEvidence = buildDecisionEvidence(updated, usddEvidence, now);
     if (liquid !== undefined) {
       currentEvidence.push({
         id: "simulated-liquid-reserve",
-        field: "plan.liquidReserveUsd",
+        field: "plan.liquidReserveUsdtEquivalent",
         value: liquid,
         source: "TRON Compass replay input",
         fetchedAt: now,
@@ -94,7 +97,7 @@ export function ReplayMonitor({
   const handleResetToLive = () => {
     setActiveScenarioId(null);
     setSimulatedOpps(liveOpportunities);
-    setSimulatedLiquidUsd(undefined);
+    setSimulatedLiquidUsdtEquivalent(undefined);
     const now = new Date().toISOString();
     const checked = decisionReceipt
       ? evaluateDecisionAssumptions(decisionReceipt.assumptions, buildDecisionEvidence(liveOpportunities, usddEvidence, now), now)
@@ -146,18 +149,18 @@ export function ReplayMonitor({
         <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-1">
           <span className="text-slate-400 block text-[11px] font-medium">최초 수립 시점 기대 APY</span>
           <div className="text-2xl font-extrabold font-mono text-slate-900">
-            {originalPlan.usdValuationStatus === "UNAVAILABLE"
+            {originalPlan.valuationStatus === "UNAVAILABLE"
               ? "UNAVAILABLE"
               : originalPlan.effectiveNetApy === null
                 ? "UNAVAILABLE · incentive APY"
-                : `${originalPlan.usdValuationStatus === "SIMULATED" ? "SIMULATED · " : ""}${originalPlan.effectiveNetApy}`}
+                : `${originalPlan.valuationStatus === "SIMULATED" ? "SIMULATED · " : ""}${originalPlan.effectiveNetApy}`}
           </div>
           <span className="text-xs text-slate-500 block">
-            {originalPlan.usdValuationStatus === "UNAVAILABLE"
-              ? "USD valuation evidence is missing; return impact cannot be calculated."
-              : originalPlan.expectedNetYieldUsd === null
+            {originalPlan.valuationStatus === "UNAVAILABLE"
+              ? "Live USDT-equivalent valuation evidence is missing; return impact cannot be calculated."
+              : originalPlan.expectedNetYieldUsdtEquivalent === null
                 ? "Net return is unavailable because source-backed incentive APY is unknown."
-                : `${originalPlan.usdValuationStatus === "SIMULATED" ? "SIMULATED · " : ""}순 예상 수익: +$${originalPlan.expectedNetYieldUsd} (${originalPlan.horizonDays}일)`}
+                : `${originalPlan.valuationStatus === "SIMULATED" ? "SIMULATED · " : ""}순 예상 수익: +${originalPlan.expectedNetYieldUsdtEquivalent} USDT-equivalent (${originalPlan.horizonDays}일)`}
           </span>
         </div>
 
@@ -165,8 +168,8 @@ export function ReplayMonitor({
           <span className="text-slate-400 block text-[11px] font-medium">
             {activeScenarioId ? "SIMULATED OUTCOME" : "Current evidence"}
           </span>
-            <div className={`text-2xl font-extrabold font-mono ${proposal.triggered ? "text-amber-600" : originalPlan.usdValuationStatus === "UNAVAILABLE" ? "text-slate-600" : "text-emerald-600"}`}>
-            {proposal.triggered ? "조건 변화 감지됨" : originalPlan.usdValuationStatus === "UNAVAILABLE" || originalPlan.effectiveNetApy === null ? "평가 불가 · UNKNOWN" : "평가 근거 내 변화 없음"}
+            <div className={`text-2xl font-extrabold font-mono ${proposal.triggered ? "text-amber-600" : originalPlan.valuationStatus === "UNAVAILABLE" ? "text-slate-600" : "text-emerald-600"}`}>
+            {proposal.triggered ? "조건 변화 감지됨" : originalPlan.valuationStatus === "UNAVAILABLE" || originalPlan.effectiveNetApy === null ? "평가 불가 · UNKNOWN" : "평가 근거 내 변화 없음"}
           </div>
           <span className="text-xs text-slate-500 block truncate">
             {originalPlan.effectiveNetApy === null && !proposal.triggered
@@ -191,7 +194,7 @@ export function ReplayMonitor({
             )}
           </div>
           <span className="text-xs text-slate-400 block">
-            {proposal.triggered ? "조건 재배분 제안" : originalPlan.usdValuationStatus === "UNAVAILABLE" ? "USD impact and allocation cannot be checked" : originalPlan.effectiveNetApy === null ? "Incentive APY is unknown; no yield comparison is available" : "No trigger found in recorded evidence"}
+            {proposal.triggered ? "조건 재배분 제안" : originalPlan.valuationStatus === "UNAVAILABLE" ? "USDT-equivalent impact and allocation cannot be checked" : originalPlan.effectiveNetApy === null ? "Incentive APY is unknown; no yield comparison is available" : "No trigger found in recorded evidence"}
           </span>
         </div>
       </div>
@@ -262,7 +265,7 @@ export function ReplayMonitor({
                 기존 예상 순수익 ({originalPlan.horizonDays}일)
               </span>
               <div className="text-xl font-extrabold font-mono text-slate-800">
-                {proposal.originalExpectedReturnUsd === "UNAVAILABLE" ? "UNAVAILABLE" : `$${proposal.originalExpectedReturnUsd}`}
+                {proposal.originalExpectedReturnUsdtEquivalent === "UNAVAILABLE" ? "UNAVAILABLE" : `${proposal.originalExpectedReturnUsdtEquivalent} USDT-equivalent`}
               </div>
               <span className="text-[10px] text-slate-400">초기 시장 조건 기준</span>
             </div>
@@ -272,7 +275,7 @@ export function ReplayMonitor({
                 시장 변동 후 예상 수익
               </span>
               <div className="text-xl font-extrabold font-mono text-amber-700">
-                {proposal.newExpectedReturnUsd === "UNAVAILABLE" ? "UNAVAILABLE" : `$${proposal.newExpectedReturnUsd}`}
+                {proposal.newExpectedReturnUsdtEquivalent === "UNAVAILABLE" ? "UNAVAILABLE" : `${proposal.newExpectedReturnUsdtEquivalent} USDT-equivalent`}
               </div>
               <span className="text-[10px] text-amber-600 font-semibold">SIMULATED OUTCOME · not a forecast</span>
             </div>
@@ -284,7 +287,7 @@ export function ReplayMonitor({
               <div className="text-2xl font-black font-mono text-rose-600 flex items-center gap-1">
                 <span>{proposal.deltaReturnPct}</span>
                 <span className="text-xs font-semibold text-rose-500">
-                  {proposal.deltaReturnUsd === "UNAVAILABLE" ? "" : `($${proposal.deltaReturnUsd})`}
+                  {proposal.deltaReturnUsdtEquivalent === "UNAVAILABLE" ? "" : `(${proposal.deltaReturnUsdtEquivalent} USDT-eq)`}
                 </span>
               </div>
               <span className="text-[10px] text-amber-800 font-medium">리밸런싱 트리거 충족</span>

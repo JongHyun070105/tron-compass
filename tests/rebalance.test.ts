@@ -10,11 +10,11 @@ import { NeedsProfile } from "../src/domain/allocation/types";
 describe("Historical Replay & Rebalance Engine", () => {
   const sampleProfile: NeedsProfile = {
     holdings: [
-      { asset: "USDD", amount: "1000", usdValuation: { valueUsd: "1000", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
-      { asset: "TRX", amount: "2000", usdValuation: { valueUsd: "500", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
+      { asset: "USDD", amount: "1000", origin: "SIMULATED", valuation: { asset: "USDD", amount: "1000", value: "1000", denomination: "USDT", source: "test fixture", fetchedAt: null, reality: "SIMULATED", stale: false } },
+      { asset: "TRX", amount: "2000", origin: "SIMULATED", valuation: { asset: "TRX", amount: "2000", value: "500", denomination: "USDT", source: "test fixture", fetchedAt: null, reality: "SIMULATED", stale: false } },
     ],
     horizonDays: 90,
-    minimumLiquidUsd: "300",
+    minimumLiquidUsdtEquivalent: "300",
     riskLevel: "LOW",
     maxVolatileExposurePct: "0.20",
     goal: "YIELD",
@@ -66,13 +66,13 @@ describe("Historical Replay & Rebalance Engine", () => {
     expect(proposal.proposedPlan).toBeDefined();
 
     // Verify calculated return metrics
-    expect(proposal.originalExpectedReturnUsd).toBeDefined();
-    expect(proposal.newExpectedReturnUsd).toBeDefined();
-    expect(proposal.deltaReturnUsd).toBeDefined();
+    expect(proposal.originalExpectedReturnUsdtEquivalent).toBeDefined();
+    expect(proposal.newExpectedReturnUsdtEquivalent).toBeDefined();
+    expect(proposal.deltaReturnUsdtEquivalent).toBeDefined();
     expect(proposal.deltaReturnPct).toBeDefined();
 
     // In Scenario 1 (incentive expires), original yield should degrade
-    expect(parseFloat(proposal.deltaReturnUsd!)).toBeLessThan(0);
+    expect(parseFloat(proposal.deltaReturnUsdtEquivalent!)).toBeLessThan(0);
     expect(parseFloat(proposal.deltaReturnPct!)).toBeLessThan(0);
 
     // Proposed plan still satisfies all hard constraints
@@ -88,8 +88,8 @@ describe("Historical Replay & Rebalance Engine", () => {
     const proposal = detectRebalanceOpportunity(unknownPlan, sampleProfile, changedOpportunities);
 
     expect(proposal.triggered).toBe(true);
-    expect(proposal.originalExpectedReturnUsd).toBe("UNAVAILABLE");
-    expect(proposal.deltaReturnUsd).toBe("UNAVAILABLE");
+    expect(proposal.originalExpectedReturnUsdtEquivalent).toBe("UNAVAILABLE");
+    expect(proposal.deltaReturnUsdtEquivalent).toBe("UNAVAILABLE");
     expect(proposal.deltaReturnPct).toBe("UNAVAILABLE");
   });
 

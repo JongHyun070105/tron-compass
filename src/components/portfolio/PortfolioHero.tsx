@@ -11,6 +11,7 @@ import {
 
 interface PortfolioHeroProps {
   walletState: WalletState;
+  jTrxBalance: string | null;
   profile: NeedsProfile;
   onExplorePlans: () => void;
   onOpenGoals: () => void;
@@ -19,6 +20,7 @@ interface PortfolioHeroProps {
 
 export function PortfolioHero({
   walletState,
+  jTrxBalance,
   profile,
   onExplorePlans,
   onOpenGoals,
@@ -64,7 +66,9 @@ export function PortfolioHero({
                 {walletState.trxBalance === "UNAVAILABLE" ? "UNAVAILABLE" : `${walletState.trxBalance} TRX`}
               </span>
               <span className="text-lg sm:text-xl font-semibold text-slate-400 font-mono">
-                {walletState.usddBalance === "UNAVAILABLE" ? "USDD UNAVAILABLE" : `+ ${walletState.usddBalance} USDD`}
+                {walletState.network.toLowerCase().includes("nile")
+                  ? jTrxBalance === null ? "jTRX UNAVAILABLE" : `+ ${jTrxBalance} jTRX`
+                  : "jTRX unavailable · connect Nile"}
               </span>
               {walletState.isDemoMode && (
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200">
@@ -74,8 +78,11 @@ export function PortfolioHero({
             </div>
             <p className="mt-2 text-xs text-slate-500">
               {walletState.isDemoMode
-                ? "Demo balances and USD valuations are synthetic fixtures, not market quotes or chain observations."
-                : "TRX is read from the connected wallet. USDD and portfolio USD value are unavailable until token and price sources are connected."}
+                ? "SIMULATED wallet values and portfolio values are demo fixtures, not chain observations."
+                : `Connected-wallet balances are execution capacity only (${walletState.network}); they are not included in the hypothetical planning portfolio.`}
+            </p>
+            <p className="text-xs text-slate-600 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2">
+              Planning assets are USER_DECLARED hypothetical Mainnet quantities. JustLend LIVE_MAINNET prices produce USDT-equivalent values; Nile balances are used only for testnet execution.
             </p>
           </div>
 
@@ -83,7 +90,7 @@ export function PortfolioHero({
           <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-600 bg-slate-50 border border-slate-200/70 px-4 py-2.5 rounded-2xl w-fit">
             <span className="font-semibold text-slate-900">설정된 목표:</span>
             <span>
-              {profile.horizonDays}일 운용 · {riskLabel} · 최소 비상금 ${profile.minimumLiquidUsd}
+              {profile.horizonDays}일 운용 · {riskLabel} · 최소 비상금 {profile.minimumLiquidUsdtEquivalent} USDT-equivalent
             </span>
             <button
               onClick={onOpenGoals}

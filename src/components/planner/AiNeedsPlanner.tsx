@@ -21,28 +21,26 @@ import {
 interface AiNeedsPlannerProps {
   currentProfile: NeedsProfile | null;
   onProfileConfirmed: (profile: NeedsProfile, sourceQuote: string) => void;
-  walletHoldings?: Array<{ asset: string; amount: string }>;
 }
 
 const PRESET_PROMPTS = [
   {
-    label: "여행비 보호 & 저위험 (추천 데모)",
-    text: "3개월 정도 굴릴 건데 다음 달 여행비 300달러는 무조건 남겨두고 싶고 코인은 많이 흔들리는 건 싫어.",
+    label: "가상 Mainnet 예산 · 여행비 보호",
+    text: "가상의 Mainnet 투자 예산으로 1,000 USDD와 2,000 TRX를 운용한다고 가정해줘. 90일 동안 저위험으로 운용하고 여행비 300 USDT-equivalent는 남겨두고 싶어.",
   },
   {
-    label: "단기 비상금 보호 (30일 · $500 비상금)",
-    text: "1,500 USDD가 있습니다. 30일 이내에 단기로 운용하되, 최소 $500는 락업 없이 즉시 쓸 수 있어야 합니다.",
+    label: "단기 비상금 보호 · 30일",
+    text: "가상의 Mainnet 예산 1,500 USDD를 30일 이내로 운용하되, 최소 500 USDT-equivalent는 락업 없이 즉시 쓸 수 있어야 합니다.",
   },
   {
     label: "중기 수익 최적화 (180일 · 적극 운용)",
-    text: "2,000 USDD와 2,500 TRX를 180일 동안 최대한 높은 이율로 굴리고 싶습니다. 변동성은 적절히 감수할 수 있습니다.",
+    text: "가상의 Mainnet 예산 2,000 USDD와 2,500 TRX를 180일 동안 높은 이율로 운용하고 싶습니다. 변동성은 적절히 감수할 수 있습니다.",
   },
 ];
 
 export function AiNeedsPlanner({
   currentProfile,
   onProfileConfirmed,
-  walletHoldings,
 }: AiNeedsPlannerProps) {
   const [inputText, setInputText] = useState(PRESET_PROMPTS[0].text);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -54,15 +52,15 @@ export function AiNeedsPlanner({
   const [editableProfile, setEditableProfile] = useState<NeedsProfile>(
     currentProfile || {
       holdings: [
-        { asset: "USDD", amount: "1000", usdValuation: { valueUsd: "1000", source: "TRON Compass demo fixture", fetchedAt: null, reality: "SIMULATED", terms: "Synthetic portfolio value for the local demo; not a market quote." } },
-        { asset: "TRX", amount: "2000", usdValuation: { valueUsd: "500", source: "TRON Compass demo fixture", fetchedAt: null, reality: "SIMULATED", terms: "Synthetic portfolio value for the local demo; not a market quote." } },
+        { asset: "USDD", amount: "1000", origin: "SIMULATED", valuation: { asset: "USDD", amount: "1000", value: "1000", denomination: "USDT", source: "TRON Compass demo fixture", fetchedAt: null, reality: "SIMULATED", stale: false, derivation: "Synthetic portfolio value for the local demo; not a market quote." } },
+        { asset: "TRX", amount: "2000", origin: "SIMULATED", valuation: { asset: "TRX", amount: "2000", value: "500", denomination: "USDT", source: "TRON Compass demo fixture", fetchedAt: null, reality: "SIMULATED", stale: false, derivation: "Synthetic portfolio value for the local demo; not a market quote." } },
       ],
       horizonDays: 90,
-      minimumLiquidUsd: "300",
+      minimumLiquidUsdtEquivalent: "300",
       riskLevel: "LOW",
       maxVolatileExposurePct: "0.20",
       goal: "BALANCED",
-      protectionClause: "여행비 $300은 운용 대상에서 제외",
+      protectionClause: "여행비 300 USDT-equivalent는 운용 대상에서 제외",
       missingFields: [],
       assumptions: [],
     }
@@ -79,7 +77,6 @@ export function AiNeedsPlanner({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           userInput: inputText,
-          walletHoldings,
         }),
       });
 
@@ -103,6 +100,7 @@ export function AiNeedsPlanner({
     MEDIUM: "보통 (균형 수익)",
     HIGH: "높음 (수익 극대화)",
   };
+  const needsUsdtEquivalentClarification = editableProfile.missingFields?.includes("USDT-equivalent 유동성 목표") ?? false;
 
   return (
     <section className="bg-white border border-slate-200/90 rounded-3xl p-6 sm:p-8 shadow-xs space-y-6">
@@ -222,7 +220,7 @@ export function AiNeedsPlanner({
         <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
           <div className="text-xs font-bold uppercase tracking-wide text-slate-700">My Rules</div>
           <div className="grid gap-2 text-xs text-slate-700 sm:grid-cols-2">
-            <div><strong>R1 · Minimum liquid reserve:</strong> ≥ ${editableProfile.minimumLiquidUsd}</div>
+            <div><strong>R1 · Minimum liquid reserve:</strong> {needsUsdtEquivalentClarification ? "UNKNOWN · confirm in USDT-equivalent" : `≥ ${editableProfile.minimumLiquidUsdtEquivalent} USDT-equivalent`}</div>
             <div><strong>R2 · Maximum volatile exposure:</strong> ≤ {(Number(editableProfile.maxVolatileExposurePct) * 100).toFixed(0)}%</div>
           </div>
           {inputText.trim() && (
@@ -274,18 +272,24 @@ export function AiNeedsPlanner({
             {isManualMode ? (
               <input
                 type="number"
-                value={editableProfile.minimumLiquidUsd}
-                onChange={(e) =>
+                value={editableProfile.minimumLiquidUsdtEquivalent}
+                placeholder="USDT-equivalent amount"
+                onChange={(e) => {
+                  const value = e.target.value;
+                  const hasExplicitAmount = /^\d+(?:\.\d+)?$/.test(value);
                   setEditableProfile({
                     ...editableProfile,
-                    minimumLiquidUsd: e.target.value,
-                  })
-                }
+                    minimumLiquidUsdtEquivalent: value,
+                    missingFields: hasExplicitAmount
+                      ? editableProfile.missingFields.filter((field) => field !== "USDT-equivalent 유동성 목표")
+                      : editableProfile.missingFields,
+                  });
+                }}
                 className="bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-lg px-2 py-1 mt-0.5 focus:outline-none w-full font-mono font-medium"
               />
             ) : (
               <div className="text-lg font-bold text-emerald-600 font-mono">
-                ${editableProfile.minimumLiquidUsd}
+                {needsUsdtEquivalentClarification ? "USDT-equivalent amount needed" : `${editableProfile.minimumLiquidUsdtEquivalent} USDT-eq`}
               </div>
             )}
             <span className="text-[11px] text-slate-400 block">확정 전 검토할 규칙</span>
@@ -339,7 +343,7 @@ export function AiNeedsPlanner({
               <span>보호 조건</span>
             </span>
             <div className="text-xs font-semibold text-slate-900 leading-snug">
-              {editableProfile.protectionClause || `비상금 $${editableProfile.minimumLiquidUsd}은 운용 대상에서 제외`}
+              {editableProfile.protectionClause || `비상금 ${editableProfile.minimumLiquidUsdtEquivalent} USDT-equivalent는 운용 대상에서 제외`}
             </div>
             <span className="text-[10px] text-amber-700 block">절대 락업 금지</span>
           </div>
@@ -349,7 +353,7 @@ export function AiNeedsPlanner({
         <div className="p-3.5 rounded-xl bg-blue-50/70 border border-blue-200/80 text-[11px] text-blue-900 flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <span className="font-bold text-blue-950">AI & 코드 책임 원칙:</span>
-            <span>AI drafts needs and rules. Asset quantities come from explicit user input or wallet reads; USD valuation, market rates, fees, and execution facts require recorded sources. Missing evidence blocks allocation.</span>
+            <span>AI drafts needs and rules. Hypothetical planning quantities are USER_DECLARED; Nile wallet balances are execution capacity only. Live Mainnet market data prices the portfolio in USDT-equivalent. Missing or stale evidence blocks allocation and signing.</span>
           </div>
           <span className="font-semibold text-blue-700 bg-white px-2 py-0.5 rounded border border-blue-200">
             No Hallucination

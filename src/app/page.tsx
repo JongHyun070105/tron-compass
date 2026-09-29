@@ -17,8 +17,8 @@ import {
   AllocationLeg,
   YieldOpportunity,
 } from "@/domain/allocation/types";
-import { generateAllocationPlans, computeTotalCapitalUsd } from "@/domain/allocation/engine";
-import { hasCompleteUsdValuation } from "@/domain/allocation/valuation";
+import { generateAllocationPlans, computeTotalCapitalValue } from "@/domain/allocation/engine";
+import { hasCompleteValuation, valueUserDeclaredHoldings } from "@/domain/allocation/valuation";
 import { UsddProtocolEvidence } from "@/lib/integrations/usdd/client";
 import { compassStorage } from "@/lib/persistence/storage";
 import {
@@ -71,38 +71,48 @@ export default function HomePage() {
       {
         asset: "USDD",
         amount: "1000",
-        usdValuation: {
-          valueUsd: "1000",
+        origin: "SIMULATED",
+        valuation: {
+          asset: "USDD",
+          amount: "1000",
+          value: "1000",
+          denomination: "USDT",
           source: "TRON Compass demo fixture",
           fetchedAt: null,
           reality: "SIMULATED",
-          terms: "Synthetic portfolio value for the local demo; not a market quote.",
+          stale: false,
+          derivation: "Synthetic portfolio value for the local demo; not a market quote.",
         },
       },
       {
         asset: "TRX",
         amount: "2000",
-        usdValuation: {
-          valueUsd: "500",
+        origin: "SIMULATED",
+        valuation: {
+          asset: "TRX",
+          amount: "2000",
+          value: "500",
+          denomination: "USDT",
           source: "TRON Compass demo fixture",
           fetchedAt: null,
           reality: "SIMULATED",
-          terms: "Synthetic portfolio value for the local demo; not a market quote.",
+          stale: false,
+          derivation: "Synthetic portfolio value for the local demo; not a market quote.",
         },
       },
     ],
     horizonDays: 90,
-    minimumLiquidUsd: "300",
+    minimumLiquidUsdtEquivalent: "300",
     riskLevel: "LOW",
     maxVolatileExposurePct: "0.20",
     goal: "BALANCED",
-    protectionClause: "여행비 $300은 운용 대상에서 제외",
+    protectionClause: "여행비 300 USDT-equivalent는 운용 대상에서 제외",
     missingFields: [],
     assumptions: [
       "투자 기간 90일 기준 복리 수익 계산",
-      "최소 상시 유동성 $300 확보",
+      "최소 상시 유동성 300 USDT-equivalent 확보",
     ],
-    sourceQuote: "여행비 $300은 남겨두고 코인 변동성은 낮게 유지하고 싶어.",
+    sourceQuote: "여행비 300 USDT-equivalent는 남겨두고 코인 변동성은 낮게 유지하고 싶어.",
   });
   const [confirmedProfile, setConfirmedProfile] = useState<NeedsProfile | null>(null);
 
@@ -191,14 +201,19 @@ export default function HomePage() {
   // Instantaneous deterministic plan calculation upon profile confirmation
   const handleProfileConfirmed = (draftProfile: NeedsProfile, sourceQuote: string) => {
     const now = new Date().toISOString();
+    const evaluationAt = Date.parse(now);
+    const valuedProfile: NeedsProfile = {
+      ...draftProfile,
+      holdings: valueUserDeclaredHoldings(draftProfile.holdings, opportunities, evaluationAt),
+    };
     const rules = buildInvestmentRules(
-      draftProfile,
+      valuedProfile,
       sourceQuote,
       now,
       confirmedProfile?.investmentRules ?? []
     );
     const nextProfile: NeedsProfile = {
-      ...draftProfile,
+      ...valuedProfile,
       sourceQuote,
       investmentRules: rules,
     };
@@ -425,10 +440,10 @@ export default function HomePage() {
     const alternatives = plans.map((candidate) => ({
       planId: candidate.id,
       allocations: candidate.allocations,
-      usdValuationStatus: candidate.usdValuationStatus,
-      baseYield: candidate.expectedBaseYieldUsd,
-      incentiveYield: candidate.expectedIncentiveYieldUsd,
-      estimatedCost: candidate.estimatedTotalCostUsd,
+      valuationStatus: candidate.valuationStatus,
+      baseYield: candidate.expectedBaseYieldUsdtEquivalent,
+      incentiveYield: candidate.expectedIncentiveYieldUsdtEquivalent,
+      estimatedCost: candidate.estimatedTotalCostUsdtEquivalent,
       exitCondition: candidate.exitConditions,
       risks: candidate.risks,
       ruleEvaluation: candidate.constraintChecks,
@@ -440,10 +455,10 @@ export default function HomePage() {
       alternatives.push({
         planId: plan.id,
         allocations: plan.allocations,
-        usdValuationStatus: plan.usdValuationStatus,
-        baseYield: plan.expectedBaseYieldUsd,
-        incentiveYield: plan.expectedIncentiveYieldUsd,
-        estimatedCost: plan.estimatedTotalCostUsd,
+        valuationStatus: plan.valuationStatus,
+        baseYield: plan.expectedBaseYieldUsdtEquivalent,
+        incentiveYield: plan.expectedIncentiveYieldUsdtEquivalent,
+        estimatedCost: plan.estimatedTotalCostUsdtEquivalent,
         exitCondition: plan.exitConditions,
         risks: plan.risks,
         ruleEvaluation: plan.constraintChecks,
@@ -514,7 +529,7 @@ export default function HomePage() {
     const decisionProfile = confirmedProfile ?? profile;
     const sharedEvaluation = evaluateDecisionRules(
       decisionProfile,
-      computeTotalCapitalUsd(decisionProfile),
+      computeTotalCapitalValue(decisionProfile),
       newPlan.allocations,
       simulatedOpportunities
     );
@@ -577,21 +592,12 @@ export default function HomePage() {
     }
   };
 
-  const walletHoldings = walletState.isDemoMode
-    ? []
-    : [
-        { asset: "USDD", amount: walletState.usddBalance },
-        { asset: "TRX", amount: walletState.trxBalance },
-      ].filter(({ amount }) => {
-        const normalized = amount.replace(/,/g, "").trim();
-        return normalized !== "" && Number.isFinite(Number(normalized)) && Number(normalized) > 0;
-      }).map(({ asset, amount }) => ({ asset, amount: amount.replace(/,/g, "").trim() }));
-
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
       {/* 1. Sticky Header (Clean, minimal clutter, light fintech) */}
       <WalletHeader
         walletState={walletState}
+        jTrxBalance={jTrxBalance}
         onConnect={handleConnect}
         onDisconnect={handleDisconnect}
         onToggleDemoMode={handleToggleDemoMode}
@@ -664,6 +670,7 @@ export default function HomePage() {
             <div ref={heroRef}>
               <PortfolioHero
                 walletState={walletState}
+                jTrxBalance={jTrxBalance}
                 profile={profile}
                 onExplorePlans={() => {
                   setCurrentStep(3);
@@ -682,14 +689,13 @@ export default function HomePage() {
               <AiNeedsPlanner
                 currentProfile={confirmedProfile ?? profile}
                 onProfileConfirmed={handleProfileConfirmed}
-                walletHoldings={walletHoldings}
               />
             </div>
 
             {/* What-if stays a secondary local simulation and does not amend My Rules. */}
             <WhatIfControls
               profile={profile}
-              totalPortfolioUsd={hasCompleteUsdValuation(profile) ? computeTotalCapitalUsd(profile) : null}
+              totalPortfolioUsdtEquivalent={hasCompleteValuation(profile) ? computeTotalCapitalValue(profile) : null}
               onChange={handleWhatIfChange}
             />
 

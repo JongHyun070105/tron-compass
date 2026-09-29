@@ -6,14 +6,16 @@ import { extractGroundedHoldings } from "../src/lib/ai/grounding";
 describe("AI Needs Analysis Layer", () => {
   const mock = new MockLLMProvider();
 
-  it("extracts only explicitly stated holding quantities, horizon, and minimum liquidity", async () => {
+  it("does not assume a USD reserve is an equivalent USDT reserve", async () => {
     const userInput =
       "I have 1,000 USDD and some TRX. I want to invest for about 90 days, but at least $300 must remain liquid. I prefer low risk.";
 
     const res = await mock.extractNeeds({ userInput });
 
     expect(res.profile.horizonDays).toBe(90);
-    expect(res.profile.minimumLiquidUsd).toBe("300");
+    expect(res.profile.minimumLiquidUsdtEquivalent).toBe("0");
+    expect(res.profile.missingFields).toContain("USDT-equivalent 유동성 목표");
+    expect(res.followUpQuestion).toContain("USDT-equivalent");
     expect(res.profile.riskLevel).toBe("LOW");
 
     const usdd = res.profile.holdings.find((h) => h.asset === "USDD");
@@ -32,13 +34,13 @@ describe("AI Needs Analysis Layer", () => {
     expect(res.followUpQuestion).toContain("수량");
   });
 
-  it("uses an explicit wallet read for token quantity and never assigns a USD value", () => {
-    expect(extractGroundedHoldings("I want to invest my USDD", [
-      { asset: "TRX", amount: "12.5" },
-      { asset: "USDD", amount: "UNAVAILABLE" },
-    ])).toEqual([{ asset: "TRX", amount: "12.5" }]);
+  it("keeps connected Nile wallet quantities out of hypothetical Mainnet planning", () => {
+    expect(extractGroundedHoldings("I want to invest my USDD")).toEqual([]);
     expect(extractGroundedHoldings("I have 1,500 USDD and some TRX")).toEqual([
-      { asset: "USDD", amount: "1500" },
+      { asset: "USDD", amount: "1500", origin: "USER_DECLARED" },
+    ]);
+    expect(extractGroundedHoldings("I have 12345678901234567890.123456789 TRX")).toEqual([
+      { asset: "TRX", amount: "12345678901234567890.123456789", origin: "USER_DECLARED" },
     ]);
   });
 
@@ -55,7 +57,7 @@ describe("AI Needs Analysis Layer", () => {
     const validJson = {
       holdings: [{ asset: "USDD", amount: "500" }],
       horizonDays: 60,
-      minimumLiquidUsd: "150",
+      minimumLiquidUsdtEquivalent: "150",
       riskLevel: "LOW",
       maxVolatileExposurePct: "0.15",
       goal: "LIQUIDITY",
@@ -77,7 +79,7 @@ describe("AI Needs Analysis Layer", () => {
     const sampleProfile = {
       holdings: [{ asset: "USDD", amount: "1000" }],
       horizonDays: 90,
-      minimumLiquidUsd: "300",
+      minimumLiquidUsdtEquivalent: "300",
       riskLevel: "LOW" as const,
       maxVolatileExposurePct: "0.20",
       goal: "BALANCED" as const,
@@ -95,14 +97,14 @@ describe("AI Needs Analysis Layer", () => {
           description: "Desc A",
           createdAt: new Date().toISOString(),
           horizonDays: 90,
-          totalCapitalUsd: "1000",
-          liquidReserveUsd: "500",
+          totalCapitalUsdtEquivalent: "1000",
+          liquidReserveUsdtEquivalent: "500",
           liquidReservePct: "50%",
           allocations: [],
-          expectedBaseYieldUsd: "10",
-          expectedIncentiveYieldUsd: "15",
-          estimatedTotalCostUsd: "0.4",
-          expectedNetYieldUsd: "24.6",
+          expectedBaseYieldUsdtEquivalent: "10",
+          expectedIncentiveYieldUsdtEquivalent: "15",
+          estimatedTotalCostUsdtEquivalent: "0.4",
+          expectedNetYieldUsdtEquivalent: "24.6",
           effectiveNetApy: "4.9%",
           liquidityScore: 90,
           riskScore: 20,
@@ -120,14 +122,14 @@ describe("AI Needs Analysis Layer", () => {
           description: "Desc B",
           createdAt: new Date().toISOString(),
           horizonDays: 90,
-          totalCapitalUsd: "1000",
-          liquidReserveUsd: "300",
+          totalCapitalUsdtEquivalent: "1000",
+          liquidReserveUsdtEquivalent: "300",
           liquidReservePct: "30%",
           allocations: [],
-          expectedBaseYieldUsd: "15",
-          expectedIncentiveYieldUsd: "25",
-          estimatedTotalCostUsd: "0.4",
-          expectedNetYieldUsd: "39.6",
+          expectedBaseYieldUsdtEquivalent: "15",
+          expectedIncentiveYieldUsdtEquivalent: "25",
+          estimatedTotalCostUsdtEquivalent: "0.4",
+          expectedNetYieldUsdtEquivalent: "39.6",
           effectiveNetApy: "7.9%",
           liquidityScore: 70,
           riskScore: 35,

@@ -1,7 +1,9 @@
-import { parseUnits, SafeMath, toDecimal } from "../math/decimal";
+import { Decimal, parseUnits, SafeMath, toDecimal } from "../math/decimal";
 import { JTRX_ABI, JUSTLEND_NILE_CONTRACTS } from "../integrations/justlend/contracts";
-import { AllocationLeg } from "@/domain/allocation/types";
+import { AllocationLeg, AssetValuation, Holding } from "@/domain/allocation/types";
 import { DecisionEvidenceItem, DecisionStopRecord, makeStopRecord } from "@/domain/decision/receipt";
+
+const JUSTLEND_VALUATION_SOURCE = "https://openapi.just.network/lend/jtoken";
 
 export type TransactionLifecycleState =
   | "IDLE"
@@ -59,7 +61,7 @@ export function evaluateNileExecutionSafety(params: {
   approvedPreview?: ExecutionPreview | null;
   approvalShown: boolean;
   evidence: Array<Pick<DecisionEvidenceItem, "fetchedAt" | "reality">>;
-  valuationEvidence: Array<Pick<DecisionEvidenceItem, "fetchedAt" | "reality">>;
+  valuationEvidence: Array<{ holding: Holding; valuation: AssetValuation | null | undefined }>;
   rulesPassed: boolean;
   ruleViolation?: { ruleId: string; actual: string; required: string; reason?: string };
   now?: number;
@@ -87,7 +89,7 @@ export function evaluateNileExecutionSafety(params: {
         ? violation.ruleId === "RULES_UNCONFIRMED"
           ? "My Rules must be confirmed before signing."
           : violation.ruleId === "VALUATION_UNAVAILABLE"
-          ? "Sourced USD valuation is unavailable; exposure rules cannot be verified before signing."
+          ? "Source-backed USDT-equivalent valuation is unavailable; exposure rules cannot be verified before signing."
           : violation.actual === "UNKNOWN"
             ? `${violation.ruleId} could not be verified: ${violation.reason ?? violation.required}`
           : violation.ruleId === "R2" || violation.ruleId === "MAX_VOLATILE_EXPOSURE"
@@ -141,15 +143,49 @@ export function evaluateNileExecutionSafety(params: {
 
   const valuationEvidence = params.valuationEvidence ?? [];
   if (!valuationEvidence.length) {
-    addStop("HOLDING_VALUATION_MISSING", "Sourced USD valuation evidence for every holding is required before checking reserve and exposure rules.");
+    addStop("HOLDING_VALUATION_MISSING", "Live valuation unavailable — execution paused.");
   } else {
-    for (const item of valuationEvidence) {
-      const fetchedAt = item.fetchedAt ? Date.parse(item.fetchedAt) : Number.NaN;
-      const fresh = Number.isFinite(fetchedAt) && now >= fetchedAt && now - fetchedAt <= (params.freshnessMs ?? 5 * 60 * 1000);
-      if (item.reality !== "LIVE_MAINNET" || !fresh) {
-        addStop("HOLDING_VALUATION_STALE", "Holding USD valuations are UNKNOWN / STALE; refresh source-backed prices before signing.");
-        break;
+    const hasInvalidValuation = valuationEvidence.some(({ holding, valuation }) => {
+      let amount: Decimal;
+      try {
+        amount = new Decimal(holding.amount);
+      } catch {
+        return true;
       }
+      if (!amount.isFinite() || amount.isNegative()) return true;
+      if (amount.isZero()) return false;
+      if (!valuation) return true;
+
+      let valuationAmount: Decimal;
+      let value: Decimal;
+      try {
+        valuationAmount = new Decimal(valuation.amount);
+        value = new Decimal(valuation.value ?? "NaN");
+      } catch {
+        return true;
+      }
+      const fetchedAt = valuation.fetchedAt ? Date.parse(valuation.fetchedAt) : Number.NaN;
+      const fresh = Number.isFinite(fetchedAt) && now >= fetchedAt && now - fetchedAt <= (params.freshnessMs ?? 5 * 60 * 1000);
+      return valuation.asset !== holding.asset ||
+        !valuationAmount.isFinite() ||
+        !valuationAmount.eq(amount) ||
+        !value.isFinite() ||
+        !value.gt(0) ||
+        valuation.denomination !== "USDT" ||
+        valuation.source !== JUSTLEND_VALUATION_SOURCE ||
+        valuation.reality !== "LIVE_MAINNET" ||
+        valuation.stale !== false ||
+        !fresh;
+    });
+    if (hasInvalidValuation) {
+      const missing = valuationEvidence.some(({ valuation }) => !valuation);
+      const stale = valuationEvidence.some(({ valuation }) => {
+        if (!valuation) return false;
+        const fetchedAt = valuation?.fetchedAt ? Date.parse(valuation.fetchedAt) : Number.NaN;
+        return valuation?.reality !== "LIVE_MAINNET" || valuation.stale !== false ||
+          !Number.isFinite(fetchedAt) || now < fetchedAt || now - fetchedAt > (params.freshnessMs ?? 5 * 60 * 1000);
+      });
+      addStop(missing ? "HOLDING_VALUATION_MISSING" : stale ? "HOLDING_VALUATION_STALE" : "HOLDING_VALUATION_INVALID", "Live valuation unavailable — execution paused.");
     }
   }
 
@@ -185,9 +221,24 @@ export interface TransactionStatusResult {
   txHash: string;
   status: "PENDING" | "CONFIRMED" | "FAILED" | "NOT_FOUND";
   blockNumber?: number;
+  feeSun?: number;
   energyFeeSun?: number;
   contractResult?: string;
   timestamp?: number;
+}
+
+/** Returns the observed after-minus-before token balance delta at token precision. */
+export function computeBalanceDelta(before: string | null | undefined, after: string | null | undefined, decimals: number): string | null {
+  if (!before || !after || !/^\d+(?:\.\d+)?$/.test(before) || !/^\d+(?:\.\d+)?$/.test(after)) return null;
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 30) return null;
+  try {
+    const prior = new Decimal(before);
+    const current = new Decimal(after);
+    if (!prior.isFinite() || prior.isNegative() || !current.isFinite() || current.isNegative()) return null;
+    return current.minus(prior).toFixed(decimals);
+  } catch {
+    return null;
+  }
 }
 
 export function determineTransactionState(params: {
@@ -564,7 +615,8 @@ export async function pollTransactionStatus(
               txHash,
               status: data.status,
               blockNumber: data.blockNumber,
-              energyFeeSun: data.energyFeeSun || 0,
+              feeSun: Number.isSafeInteger(data.feeSun) && data.feeSun >= 0 ? data.feeSun : undefined,
+              energyFeeSun: Number.isSafeInteger(data.energyFeeSun) && data.energyFeeSun >= 0 ? data.energyFeeSun : undefined,
               contractResult: data.contractResult,
               timestamp: data.blockTimestamp,
             };

@@ -15,7 +15,7 @@ function draftRules(profile: NeedsProfile): DraftRule[] {
       id: "R1",
       type: "MINIMUM_LIQUIDITY",
       predicate: "GTE",
-      value: profile.minimumLiquidUsd,
+      value: profile.minimumLiquidUsdtEquivalent,
     },
     {
       id: "R2",
@@ -75,9 +75,10 @@ export function getRuleForType(
 
 export function evaluateDecisionRules(
   profile: NeedsProfile,
-  totalCapitalUsd: string,
+  totalCapitalUsdtEquivalent: string,
   allocations: AllocationLeg[],
-  opportunities: YieldOpportunity[]
+  opportunities: YieldOpportunity[],
+  now: number = Date.now()
 ) {
-  return evaluateHardConstraints(profile, totalCapitalUsd, allocations, opportunities);
+  return evaluateHardConstraints(profile, totalCapitalUsdtEquivalent, allocations, opportunities, now);
 }

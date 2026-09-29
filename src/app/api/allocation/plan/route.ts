@@ -18,7 +18,7 @@ export async function POST(request: Request) {
     // Fetch live normalized opportunities
     const { markets } = await fetchJustLendMarkets();
 
-    const { plans, totalCapitalUsd } = generateAllocationPlans(
+    const { plans, totalCapitalUsdtEquivalent } = generateAllocationPlans(
       profile,
       markets,
       new Date().toISOString()
@@ -28,7 +28,7 @@ export async function POST(request: Request) {
       success: true,
       data: {
         plans,
-        totalCapitalUsd,
+        totalCapitalUsdtEquivalent,
       },
     });
   } catch (err) {

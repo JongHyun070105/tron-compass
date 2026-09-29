@@ -433,11 +433,11 @@ export class TronGridClient {
         blockNumber: info.blockNumber,
         blockTimestamp: info.blockTimeStamp,
         contractResult: receiptResult || topResult || "SUCCESS",
-        feeSun: info.fee || 0,
-        netFeeSun: receipt?.net_fee || 0,
-        energyFeeSun: receipt?.energy_fee || 0,
-        energyUsageTotal: receipt?.energy_usage_total || 0,
-        netUsage: receipt?.net_usage || 0,
+        feeSun: info.fee,
+        netFeeSun: receipt?.net_fee,
+        energyFeeSun: receipt?.energy_fee,
+        energyUsageTotal: receipt?.energy_usage_total,
+        netUsage: receipt?.net_usage,
         rawReceipt: info,
       };
     }

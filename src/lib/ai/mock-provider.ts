@@ -6,7 +6,6 @@ export interface LLMProvider {
   extractNeeds(input: {
     userInput: string;
     conversationHistory?: Array<{ role: "user" | "assistant"; content: string }>;
-    walletHoldings?: Array<{ asset: string; amount: string }>;
   }): Promise<{
     profile: NeedsProfile;
     needsClarification: boolean;
@@ -35,7 +34,6 @@ export class MockLLMProvider implements LLMProvider {
   async extractNeeds(input: {
     userInput: string;
     conversationHistory?: Array<{ role: "user" | "assistant"; content: string }>;
-    walletHoldings?: Array<{ asset: string; amount: string }>;
   }): Promise<{
     profile: NeedsProfile;
     needsClarification: boolean;
@@ -45,8 +43,8 @@ export class MockLLMProvider implements LLMProvider {
   }> {
     const text = input.userInput.toLowerCase();
 
-    // Balances come from explicit user quantities or a wallet read, never a model default.
-    const holdings = extractGroundedHoldings(input.userInput, input.walletHoldings);
+    // Planning quantities come from explicit user text; wallet execution balances stay separate.
+    const holdings = extractGroundedHoldings(input.userInput);
 
     // 2. Horizon
     let horizonDays = 90;
@@ -61,10 +59,11 @@ export class MockLLMProvider implements LLMProvider {
     }
 
     // 3. Minimum Liquid Reserve
-    let minimumLiquidUsd = "300";
-    const liquidMatch = text.match(/(?:liquid|유동성|reserve|남겨|보유)[\s\w$]*?([0-9,]+)/);
-    if (liquidMatch) {
-      minimumLiquidUsd = liquidMatch[1].replace(/,/g, "");
+    let minimumLiquidUsdtEquivalent = "300";
+    const hasUsdtEquivalentUnit = /usdt\s*(?:-?\s*(?:equivalent|eq)|상당)/i.test(input.userInput);
+    const liquidMatch = text.match(/(?:liquid|유동성|reserve|남겨|보유)[\s\w$-]*?([0-9,]+)/);
+    if (liquidMatch && hasUsdtEquivalentUnit) {
+      minimumLiquidUsdtEquivalent = liquidMatch[1].replace(/,/g, "");
     }
 
     // 4. Risk & Goal
@@ -84,6 +83,8 @@ export class MockLLMProvider implements LLMProvider {
 
     const missingFields: string[] = [];
     if (!holdings.length) missingFields.push("보유 자산 수량");
+    const hasUnconvertedFiatReserve = /(?:\$|\busd\b|dollars?|달러)/i.test(input.userInput) && !hasUsdtEquivalentUnit;
+    if (hasUnconvertedFiatReserve) missingFields.push("USDT-equivalent 유동성 목표");
     if (!horizonMatch) {
       missingFields.push("투자기간 (예: 90일)");
     }
@@ -91,6 +92,8 @@ export class MockLLMProvider implements LLMProvider {
     const needsClarification = missingFields.length > 0;
     const followUpQuestion = missingFields.includes("보유 자산 수량")
       ? "보유하신 자산과 수량을 알려주세요. 예: 1,000 USDD 또는 2,000 TRX."
+      : hasUnconvertedFiatReserve
+        ? "USD와 USDT-equivalent 간 환산 근거를 가정하지 않습니다. 최소 유동성 목표를 USDT-equivalent 수량으로 알려주세요."
       : !horizonMatch
         ? "희망하시는 목표 투자 기간(예: 30일, 90일, 180일)을 말씀해 주세요."
         : undefined;
@@ -101,13 +104,15 @@ export class MockLLMProvider implements LLMProvider {
 
     let protectionClause: string | undefined = undefined;
     if (text.includes("여행") || text.includes("남겨") || text.includes("비상금")) {
-      protectionClause = `지정 자금 $${minimumLiquidUsd}은 운용 대상에서 전액 제외`;
+      protectionClause = hasUnconvertedFiatReserve
+        ? "USD로 지정된 보호 자금은 USDT-equivalent 단위 확인 전까지 미확정"
+        : `지정 자금 ${minimumLiquidUsdtEquivalent} USDT-equivalent는 운용 대상에서 전액 제외`;
     }
 
     const profile: NeedsProfile = {
       holdings,
       horizonDays,
-      minimumLiquidUsd,
+      minimumLiquidUsdtEquivalent: hasUnconvertedFiatReserve ? "0" : minimumLiquidUsdtEquivalent,
       riskLevel,
       maxVolatileExposurePct,
       goal,
@@ -115,7 +120,9 @@ export class MockLLMProvider implements LLMProvider {
       missingFields,
       assumptions: [
         `투자 기간 ${horizonDays}일 기준 복리 수익 추정`,
-        `최소 유동성 규칙 초안: $${minimumLiquidUsd}`,
+        hasUnconvertedFiatReserve
+          ? "최소 유동성 목표는 USDT-equivalent 단위 확인 전까지 미확정"
+          : `최소 유동성 규칙 초안: ${minimumLiquidUsdtEquivalent} USDT-equivalent`,
       ],
     };
 
@@ -135,18 +142,18 @@ export class MockLLMProvider implements LLMProvider {
     const [planA, planB] = input.plans;
     const explain = (plan?: AllocationPlan) => {
       if (!plan) return "No deterministic plan is available.";
-      if (plan.usdValuationStatus === "UNAVAILABLE") {
-        return "USD valuation evidence is unavailable. No allocation or dollar return is produced.";
+      if (plan.valuationStatus === "UNAVAILABLE") {
+        return "Live USDT-equivalent valuation evidence is unavailable. No allocation or USDT-equivalent return is produced.";
       }
       const failedRules = plan.constraintChecks.filter((check) => !check.passed).map((check) => check.name);
       if (failedRules.length) return `This option fails recorded checks: ${failedRules.join(", ")}. It is not eligible for execution.`;
-      const incentiveYield = plan.expectedIncentiveYieldUsd === null
+      const incentiveYield = plan.expectedIncentiveYieldUsdtEquivalent === null
         ? "UNAVAILABLE"
-        : `$${plan.expectedIncentiveYieldUsd}`;
-      const netYield = plan.expectedNetYieldUsd === null
+        : `${plan.expectedIncentiveYieldUsdtEquivalent} USDT-equivalent`;
+      const netYield = plan.expectedNetYieldUsdtEquivalent === null
         ? "UNAVAILABLE because source-backed incentive APY is missing"
-        : `$${plan.expectedNetYieldUsd}`;
-      return `${plan.label}: ${plan.allocations.length} recorded allocation(s); estimated base yield $${plan.expectedBaseYieldUsd}, incentive yield ${incentiveYield}, estimated costs $${plan.estimatedTotalCostUsd}, and net yield ${netYield} over ${plan.horizonDays} days. These are estimates, not guarantees.`;
+        : `${plan.expectedNetYieldUsdtEquivalent} USDT-equivalent`;
+      return `${plan.label}: ${plan.allocations.length} recorded allocation(s); estimated base yield ${plan.expectedBaseYieldUsdtEquivalent} USDT-equivalent, incentive yield ${incentiveYield}, Compass policy cost estimate ${plan.estimatedTotalCostUsdtEquivalent} USDT-equivalent, and net yield ${netYield} over ${plan.horizonDays} days. Cost estimates are not actual network fees; returns are estimates, not guarantees.`;
     };
 
     return {

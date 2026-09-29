@@ -13,11 +13,11 @@ const sampleOpportunities: YieldOpportunity[] = normalizeJustLendMarketList(
 describe("Deterministic Allocation Engine", () => {
   const sampleProfile: NeedsProfile = {
     holdings: [
-      { asset: "USDD", amount: "1000", usdValuation: { valueUsd: "1000", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
-      { asset: "TRX", amount: "2000", usdValuation: { valueUsd: "500", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } }, // simulated valuation
+      { asset: "USDD", amount: "1000", origin: "SIMULATED", valuation: { asset: "USDD", amount: "1000", value: "1000", denomination: "USDT", source: "test fixture", fetchedAt: null, reality: "SIMULATED", stale: false } },
+      { asset: "TRX", amount: "2000", origin: "SIMULATED", valuation: { asset: "TRX", amount: "2000", value: "500", denomination: "USDT", source: "test fixture", fetchedAt: null, reality: "SIMULATED", stale: false } }, // simulated valuation
     ],
     horizonDays: 90,
-    minimumLiquidUsd: "400", // Needs $400 liquid out of $1500
+    minimumLiquidUsdtEquivalent: "400", // Needs $400 liquid out of $1500
     riskLevel: "LOW",
     maxVolatileExposurePct: "0.20", // Max 20% volatile ($300 max TRX)
     goal: "BALANCED",
@@ -26,12 +26,12 @@ describe("Deterministic Allocation Engine", () => {
   };
 
   it("generates 2 distinct viable plans (Plan A and Plan B) both satisfying hard constraints", () => {
-    const { plans, totalCapitalUsd } = generateAllocationPlans(
+    const { plans, totalCapitalUsdtEquivalent } = generateAllocationPlans(
       sampleProfile,
       sampleOpportunities
     );
 
-    expect(totalCapitalUsd).toBe("1500.00");
+    expect(totalCapitalUsdtEquivalent).toBe("1500.00");
     expect(plans).toHaveLength(2);
 
     const [planA, planB] = plans;
@@ -46,17 +46,17 @@ describe("Deterministic Allocation Engine", () => {
     }
   });
 
-  it("blocks allocation and marks My Rules UNKNOWN when a holding lacks sourced USD valuation", () => {
+  it("blocks allocation and marks My Rules UNKNOWN when a holding lacks sourced USDT-equivalent valuation", () => {
     const profileWithoutValuation: NeedsProfile = {
       ...sampleProfile,
       holdings: [{ asset: "TRX", amount: "2000" }],
     };
-    const { plans, totalCapitalUsd } = generateAllocationPlans(profileWithoutValuation, sampleOpportunities);
+    const { plans, totalCapitalUsdtEquivalent } = generateAllocationPlans(profileWithoutValuation, sampleOpportunities);
 
-    expect(totalCapitalUsd).toBe("0.00");
+    expect(totalCapitalUsdtEquivalent).toBe("0.00");
     expect(plans.every((plan) => plan.allocations.length === 0)).toBe(true);
-    expect(plans.every((plan) => plan.usdValuationStatus === "UNAVAILABLE")).toBe(true);
-    expect(plans.every((plan) => plan.constraintChecks.find((check) => check.key === "USD_VALUATION_EVIDENCE")?.passed === false)).toBe(true);
+    expect(plans.every((plan) => plan.valuationStatus === "UNAVAILABLE")).toBe(true);
+    expect(plans.every((plan) => plan.constraintChecks.find((check) => check.key === "USDT_EQUIVALENT_VALUATION_EVIDENCE")?.passed === false)).toBe(true);
   });
 
   it("strictly enforces minimum liquid reserve (>= $400)", () => {
@@ -66,7 +66,7 @@ describe("Deterministic Allocation Engine", () => {
     );
 
     for (const p of plans) {
-      expect(parseFloat(p.liquidReserveUsd)).toBeGreaterThanOrEqual(400);
+      expect(parseFloat(p.liquidReserveUsdtEquivalent)).toBeGreaterThanOrEqual(400);
       const minCheck = p.constraintChecks.find(
         (c) => c.key === "MIN_LIQUIDITY"
       );
@@ -83,8 +83,8 @@ describe("Deterministic Allocation Engine", () => {
     for (const p of plans) {
       const trxLeg = p.allocations.find((a) => a.asset === "TRX");
       if (trxLeg) {
-        // TRX usdValue cannot exceed 20% of 1500 ($300)
-        expect(parseFloat(trxLeg.usdValue)).toBeLessThanOrEqual(300.01);
+        // TRX valueUsdtEquivalent cannot exceed 20% of 1500 ($300)
+        expect(parseFloat(trxLeg.valueUsdtEquivalent)).toBeLessThanOrEqual(300.01);
       }
       const volCheck = p.constraintChecks.find(
         (c) => c.key === "MAX_VOLATILE_EXPOSURE"
@@ -100,15 +100,15 @@ describe("Deterministic Allocation Engine", () => {
     );
 
     for (const p of plans) {
-      expect(parseFloat(p.expectedBaseYieldUsd)).toBeGreaterThanOrEqual(0);
+      expect(parseFloat(p.expectedBaseYieldUsdtEquivalent)).toBeGreaterThanOrEqual(0);
       if (p.allocations.some((leg) => leg.incentiveApy === null)) {
-        expect(p.expectedIncentiveYieldUsd).toBeNull();
-        expect(p.expectedNetYieldUsd).toBeNull();
+        expect(p.expectedIncentiveYieldUsdtEquivalent).toBeNull();
+        expect(p.expectedNetYieldUsdtEquivalent).toBeNull();
         expect(p.effectiveNetApy).toBeNull();
       } else {
-        expect(Number(p.expectedIncentiveYieldUsd)).toBeGreaterThanOrEqual(0);
+        expect(Number(p.expectedIncentiveYieldUsdtEquivalent)).toBeGreaterThanOrEqual(0);
       }
-      expect(parseFloat(p.estimatedTotalCostUsd)).toBeGreaterThanOrEqual(0);
+      expect(parseFloat(p.estimatedTotalCostUsdtEquivalent)).toBeGreaterThanOrEqual(0);
     }
   });
 
@@ -120,15 +120,15 @@ describe("Deterministic Allocation Engine", () => {
         productName: "jUSDD Market",
         protocol: "JustLend DAO",
         amount: "1400",
-        usdValue: "1400", // Leaves only $100 liquid, less than required $400!
+        valueUsdtEquivalent: "1400", // Leaves only $100 liquid, less than required $400!
         allocationPct: "0.9333",
         baseApy: "0.01",
         incentiveApy: "0.03",
         totalApy: "0.04",
-        baseYieldEstimateUsd: "3.5",
-        incentiveYieldEstimateUsd: "10.5",
-        estimatedCostUsd: "0.4",
-        netYieldEstimateUsd: "13.6",
+        baseYieldEstimateUsdtEquivalent: "3.5",
+        incentiveYieldEstimateUsdtEquivalent: "10.5",
+        estimatedCostUsdtEquivalent: "0.4",
+        netYieldEstimateUsdtEquivalent: "13.6",
         executable: false,
         executabilityClass: "LIVE_DATA_ONLY" as const,
         executabilityLabel: "분석 전용",

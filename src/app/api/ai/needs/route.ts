@@ -4,7 +4,7 @@ import { getLLMProvider } from "@/lib/ai/provider";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { userInput, walletHoldings } = body;
+    const { userInput } = body;
 
     if (!userInput || typeof userInput !== "string") {
       return NextResponse.json(
@@ -16,7 +16,6 @@ export async function POST(request: Request) {
     const provider = getLLMProvider();
     const result = await provider.extractNeeds({
       userInput,
-      walletHoldings,
     });
 
     return NextResponse.json({

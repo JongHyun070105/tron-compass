@@ -13,12 +13,12 @@ import {
   DollarSign,
   Info,
 } from "lucide-react";
-import { getUsdValuationStatus, hasCompleteUsdValuation } from "@/domain/allocation/valuation";
+import { getValuationStatus, hasCompleteValuation } from "@/domain/allocation/valuation";
 
 interface WhatIfControlsProps {
   profile: NeedsProfile;
-  totalCapitalUsd?: string;
-  totalPortfolioUsd?: string | null;
+  totalCapitalUsdtEquivalent?: string;
+  totalPortfolioUsdtEquivalent?: string | null;
   activePlan?: AllocationPlan | null;
   onConstraintsChanged?: (updatedProfile: NeedsProfile) => void;
   onChange?: (updatedProfile: NeedsProfile) => void;
@@ -26,8 +26,8 @@ interface WhatIfControlsProps {
 
 export function WhatIfControls({
   profile,
-  totalCapitalUsd,
-  totalPortfolioUsd,
+  totalCapitalUsdtEquivalent,
+  totalPortfolioUsdtEquivalent,
   activePlan,
   onConstraintsChanged,
   onChange,
@@ -37,18 +37,18 @@ export function WhatIfControls({
     if (onConstraintsChanged) onConstraintsChanged(updated);
   };
 
-  const valuationAvailable = hasCompleteUsdValuation(profile);
+  const valuationAvailable = hasCompleteValuation(profile);
   const totalCapDisplay = valuationAvailable
-    ? totalPortfolioUsd || totalCapitalUsd || "UNAVAILABLE"
+    ? totalPortfolioUsdtEquivalent || totalCapitalUsdtEquivalent || "UNAVAILABLE"
     : "UNAVAILABLE";
-  const currentLiquid = parseInt(profile.minimumLiquidUsd || "300", 10);
+  const currentLiquid = parseInt(profile.minimumLiquidUsdtEquivalent || "300", 10);
   const currentHorizon = profile.horizonDays || 90;
   const currentRisk = profile.riskLevel || "LOW";
 
   const handleLiquidChange = (newVal: number) => {
     triggerChange({
       ...profile,
-      minimumLiquidUsd: newVal.toString(),
+      minimumLiquidUsdtEquivalent: newVal.toString(),
     });
   };
 
@@ -89,7 +89,7 @@ export function WhatIfControls({
                 <Zap className="w-3 h-3 text-emerald-600 fill-emerald-600" />
                 <span>즉시 로컬 재계산</span>
               </span>
-              {getUsdValuationStatus(profile) === "SIMULATED" && (
+              {getValuationStatus(profile) === "SIMULATED" && (
                 <span className="text-[11px] bg-amber-50 text-amber-800 border border-amber-200 px-2.5 py-0.5 rounded-full font-bold">
                   SIMULATED inputs
                 </span>
@@ -104,7 +104,7 @@ export function WhatIfControls({
         <div className="text-right text-xs">
           <span className="text-slate-400 block text-[11px]">운용 대상 총 자본</span>
           <span className="font-mono font-bold text-slate-900 text-sm">
-            {valuationAvailable ? `$${totalCapDisplay} USD` : "UNAVAILABLE · USD valuation evidence missing"}
+            {valuationAvailable ? `${totalCapDisplay} USDT-equivalent` : "UNAVAILABLE · live valuation evidence missing"}
           </span>
         </div>
       </div>
@@ -119,7 +119,7 @@ export function WhatIfControls({
               <span>최소 상시 비상금</span>
             </span>
             <span className="text-sm font-extrabold font-mono text-emerald-700 bg-white border border-slate-200 px-2.5 py-0.5 rounded-lg shadow-2xs">
-              ${currentLiquid}
+              {currentLiquid} USDT-eq
             </span>
           </div>
 
@@ -134,10 +134,10 @@ export function WhatIfControls({
           />
 
           <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
-            <span>$100</span>
-            <span>$300</span>
-            <span>$500</span>
-            <span>$800</span>
+            <span>100</span>
+            <span>300</span>
+            <span>500</span>
+            <span>800 USDT-eq</span>
           </div>
           <span className="text-[10px] text-slate-400 block">
             비상금을 높이면 안전 자산 비율이 증가하고 가동 자본이 줄어듭니다.
@@ -241,14 +241,14 @@ export function WhatIfControls({
               </span>
               <div className="flex items-center gap-3 mt-0.5">
                 <span className="text-lg font-extrabold font-mono text-emerald-400">
-                  {activePlan.usdValuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : activePlan.effectiveNetApy ?? "UNAVAILABLE · incentive APY"}
+                  {activePlan.valuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : activePlan.effectiveNetApy ?? "UNAVAILABLE · incentive APY"}
                 </span>
                 <span className="text-xs text-slate-300 font-mono">
-                  {activePlan.usdValuationStatus === "UNAVAILABLE"
-                    ? "USD-based return calculation is unavailable."
-                    : activePlan.expectedNetYieldUsd === null
+                  {activePlan.valuationStatus === "UNAVAILABLE"
+                    ? "Live USDT-equivalent return calculation is unavailable."
+                    : activePlan.expectedNetYieldUsdtEquivalent === null
                       ? "Net return unavailable because incentive APY is unknown."
-                      : `${activePlan.horizonDays}일 예상 순수익: +$${activePlan.expectedNetYieldUsd}`}
+                      : `${activePlan.horizonDays}일 예상 순수익: +${activePlan.expectedNetYieldUsdtEquivalent} USDT-equivalent`}
                 </span>
               </div>
             </div>
@@ -258,7 +258,7 @@ export function WhatIfControls({
             <div className="bg-white/10 px-3 py-1.5 rounded-xl border border-white/10">
               <span className="text-slate-400 text-[10px] block">상시 비상금</span>
               <span className="text-emerald-400 font-bold">
-                {activePlan.usdValuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : `$${activePlan.liquidReserveUsd} (${activePlan.liquidReservePct})`}
+                {activePlan.valuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : `${activePlan.liquidReserveUsdtEquivalent} USDT-eq (${activePlan.liquidReservePct})`}
               </span>
             </div>
 

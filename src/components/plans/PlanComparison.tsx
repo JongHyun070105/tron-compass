@@ -168,9 +168,9 @@ export function PlanComparison({
                   <p className="text-xs text-slate-500 leading-relaxed">
                     {planOneLineSummary}
                   </p>
-                  {plan.usdValuationStatus && plan.usdValuationStatus !== "SOURCE_BACKED" && (
-                    <span className={`inline-flex text-[10px] font-bold px-2 py-1 rounded-md border ${plan.usdValuationStatus === "SIMULATED" ? "bg-amber-50 text-amber-800 border-amber-200" : plan.usdValuationStatus === "SNAPSHOT" ? "bg-blue-50 text-blue-800 border-blue-200" : "bg-slate-100 text-slate-700 border-slate-200"}`}>
-                      {plan.usdValuationStatus === "SIMULATED" ? "SIMULATED · demo valuation" : plan.usdValuationStatus === "SNAPSHOT" ? "SNAPSHOT valuation" : "USD valuation UNAVAILABLE"}
+                  {plan.valuationStatus && plan.valuationStatus !== "SOURCE_BACKED" && (
+                    <span className={`inline-flex text-[10px] font-bold px-2 py-1 rounded-md border ${plan.valuationStatus === "SIMULATED" ? "bg-amber-50 text-amber-800 border-amber-200" : plan.valuationStatus === "SNAPSHOT" ? "bg-blue-50 text-blue-800 border-blue-200" : "bg-slate-100 text-slate-700 border-slate-200"}`}>
+                      {plan.valuationStatus === "SIMULATED" ? "SIMULATED · demo valuation" : plan.valuationStatus === "SNAPSHOT" ? "SNAPSHOT valuation" : "Live USDT-equivalent valuation UNAVAILABLE"}
                     </span>
                   )}
                 </div>
@@ -182,7 +182,7 @@ export function PlanComparison({
                       예상 연 수익률 (순 APY)
                     </span>
                     <div className="text-3xl sm:text-4xl font-extrabold text-emerald-600 font-mono tracking-tight">
-                      {plan.usdValuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : plan.effectiveNetApy ?? "UNAVAILABLE · incentive APY"}
+                      {plan.valuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : plan.effectiveNetApy ?? "UNAVAILABLE · incentive APY"}
                     </div>
                   </div>
 
@@ -191,7 +191,7 @@ export function PlanComparison({
                       {plan.horizonDays}일 예상 순수익
                     </span>
                     <span className="text-lg sm:text-xl font-bold text-slate-800 font-mono">
-                      {plan.usdValuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : plan.expectedNetYieldUsd === null ? "UNAVAILABLE · incentive APY" : `+$${plan.expectedNetYieldUsd}`}
+                      {plan.valuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : plan.expectedNetYieldUsdtEquivalent === null ? "UNAVAILABLE · incentive APY" : `+${plan.expectedNetYieldUsdtEquivalent} USDT-equivalent`}
                     </span>
                   </div>
                 </div>
@@ -201,7 +201,7 @@ export function PlanComparison({
                   <div className="bg-slate-50 border border-slate-200/70 rounded-xl p-2.5">
                     <span className="text-slate-400 block text-[11px]">상시 비상금</span>
                     <strong className="text-emerald-700 font-mono text-sm block mt-0.5">
-                      {plan.usdValuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : `$${plan.liquidReserveUsd}`}
+                      {plan.valuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : `${plan.liquidReserveUsdtEquivalent} USDT-equivalent`}
                     </strong>
                     <span className="text-[10px] text-slate-400">미배분 잔액 · 수수료 발생 가능</span>
                   </div>
@@ -252,8 +252,8 @@ export function PlanComparison({
                   <div className="space-y-2">
                     {plan.allocations.length === 0 ? (
                       <p className="text-xs text-slate-500 rounded-xl bg-slate-50 border border-slate-200 p-3">
-                        {plan.usdValuationStatus === "UNAVAILABLE"
-                          ? "A sourced USD value is missing for one or more holdings. Exposure and reserve rules are UNKNOWN, so no allocation is proposed."
+                        {plan.valuationStatus === "UNAVAILABLE"
+                          ? "Live valuation unavailable — execution paused. Fresh JustLend prices in USDT-equivalent are required for every declared holding."
                           : "No allocation is supported by the current recorded evidence and rules."}
                       </p>
                     ) : plan.allocations.map((leg, lIdx) => (
@@ -270,7 +270,7 @@ export function PlanComparison({
                               {leg.productName}
                             </span>
                             <span className="text-[11px] text-slate-500 font-mono">
-                              {leg.amount} {leg.asset} (${leg.usdValue})
+                              {leg.amount} {leg.asset} ({leg.valueUsdtEquivalent} USDT-equivalent)
                             </span>
                           </div>
                         </div>
@@ -375,8 +375,8 @@ export function PlanComparison({
                   </div>
                 ) : (
                   <div className="text-center text-xs text-slate-500 py-2">
-                    {plan.usdValuationStatus === "UNAVAILABLE"
-                      ? "A sourced valuation and passing My Rules checks are required before an execution option can appear."
+                    {plan.valuationStatus === "UNAVAILABLE"
+                      ? "Live valuation unavailable — execution paused. Fresh prices and passing My Rules checks are required before an execution option can appear."
                       : "No allocation currently passes all recorded checks and execution requirements."}
                   </div>
                 )}

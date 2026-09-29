@@ -11,7 +11,9 @@ interface DecisionReceiptPanelProps {
 
 function evidenceLabel(field: string): string {
   if (field.startsWith("portfolio.holdings.")) {
-    return `${field.split(".")[2]} USD valuation`;
+    return field.endsWith(".origin")
+      ? `${field.split(".")[2]} planning input reality`
+      : `${field.split(".")[2]} USDT-equivalent valuation`;
   }
   if (field.endsWith(".baseApy")) return "Base yield";
   if (field.endsWith(".incentiveApy")) return "USDD mining incentive";
@@ -19,8 +21,8 @@ function evidenceLabel(field: string): string {
   if (field === "usdd.collateralRatioPct") return "USDD collateral ratio";
   if (field.endsWith(".utilizationPct")) return "Utilization";
   if (field.endsWith(".poolCapacitySourceUnits")) return "Pool cash + borrows (source units)";
-  if (field.endsWith(".estimatedEntryCostUsd")) return "Estimated entry cost";
-  if (field.endsWith(".estimatedExitCostUsd")) return "Estimated exit cost";
+  if (field.endsWith(".estimatedEntryCostUsdtEquivalent")) return "Estimated entry cost";
+  if (field.endsWith(".estimatedExitCostUsdtEquivalent")) return "Estimated exit cost";
   return field;
 }
 
@@ -29,6 +31,7 @@ function evidenceValue(field: string, value: string | null): string {
   if (field.endsWith(".baseApy") || field.endsWith(".incentiveApy") || field.endsWith(".totalApy") || field.endsWith(".utilizationPct")) {
     return toPercentString(value);
   }
+  if (field.endsWith(".usdtEquivalentValue")) return `${value} USDT-equivalent`;
   return value;
 }
 
@@ -154,12 +157,12 @@ export function DecisionReceiptPanel({ receipt }: DecisionReceiptPanelProps) {
                 <div key={option.planId} className={`rounded-xl border p-3 ${option.planId === receipt.selection.planId ? "border-indigo-200 bg-indigo-50/50" : "border-slate-100"}`}>
                   <div className="flex items-center justify-between gap-2">
                     <strong className="text-xs text-slate-900">{option.planId === receipt.selection.planId ? "SELECTED · " : ""}{option.planId}</strong>
-                    <span className="text-[10px] font-semibold text-slate-500">{[option.executionReality.replaceAll("_", " "), option.usdValuationStatus].filter(Boolean).join(" · ")}</span>
+                    <span className="text-[10px] font-semibold text-slate-500">{[option.executionReality.replaceAll("_", " "), option.valuationStatus].filter(Boolean).join(" · ")}</span>
                   </div>
                   <div className="mt-2 grid grid-cols-3 gap-2 text-[10px]">
-                    <span>Base<br /><b className="text-xs text-slate-800">{option.usdValuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : `${option.usdValuationStatus === "SIMULATED" ? "SIMULATED " : ""}$${option.baseYield}`}</b></span>
-                    <span>Incentive<br /><b className="text-xs text-slate-800">{option.usdValuationStatus === "UNAVAILABLE" || option.incentiveYield === null ? "Unavailable" : `${option.usdValuationStatus === "SIMULATED" ? "SIMULATED " : ""}$${option.incentiveYield}`}</b></span>
-                    <span>Est. cost<br /><b className="text-xs text-slate-800">{option.usdValuationStatus === "UNAVAILABLE" || option.estimatedCost === null ? "Unavailable" : `${option.usdValuationStatus === "SIMULATED" ? "SIMULATED " : ""}$${option.estimatedCost}`}</b></span>
+                    <span>Base<br /><b className="text-xs text-slate-800">{option.valuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : `${option.valuationStatus === "SIMULATED" ? "SIMULATED " : ""}${option.baseYield} USDT-eq`}</b></span>
+                    <span>Incentive<br /><b className="text-xs text-slate-800">{option.valuationStatus === "UNAVAILABLE" || option.incentiveYield === null ? "Unavailable" : `${option.valuationStatus === "SIMULATED" ? "SIMULATED " : ""}${option.incentiveYield} USDT-eq`}</b></span>
+                    <span>Compass policy cost estimate<br /><b className="text-xs text-slate-800">{option.valuationStatus === "UNAVAILABLE" || option.estimatedCost === null ? "Unavailable" : `${option.valuationStatus === "SIMULATED" ? "SIMULATED " : ""}${option.estimatedCost} USDT-eq`}</b></span>
                   </div>
                   <p className="mt-2 text-[10px] text-slate-500">Rules: {option.ruleEvaluation.every((item) => item.passed) ? "PASS" : "STOP · one or more rules failed"}</p>
                 </div>
@@ -214,8 +217,16 @@ export function DecisionReceiptPanel({ receipt }: DecisionReceiptPanelProps) {
                 <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${receipt.execution.result === "CONFIRMED" ? "bg-emerald-50 text-emerald-700" : receipt.execution.result === "SIMULATED" ? "bg-amber-50 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{receipt.execution.result}</span>
               </div>
               {receipt.execution.txHash ? <p className="mt-2 break-all font-mono text-[10px] text-slate-600">TX {receipt.execution.txHash}</p> : <p className="mt-2 text-[10px] text-slate-500">No on-chain transaction recorded.</p>}
+              {receipt.execution.amountAsset && <p className="mt-1 text-[10px] text-slate-500">Amount: {receipt.execution.amount ?? "Unavailable"} {receipt.execution.amountAsset} · {receipt.execution.amountRaw ?? "Unavailable"} raw units</p>}
+              {receipt.execution.contractResult && <p className="mt-1 text-[10px] text-slate-500">TronGrid receipt: {receipt.execution.contractResult}</p>}
               <p className="mt-2 text-[10px] text-slate-500">Block: {receipt.execution.blockNumber ?? "Unavailable"} · Actual fee: {receipt.execution.actualFee ?? "Unavailable"}</p>
-              <p className="mt-1 text-[10px] text-slate-500">Balance before / after: {receipt.execution.balanceBefore ?? "Unavailable"} / {receipt.execution.balanceAfter ?? "Unavailable"}</p>
+              {receipt.execution.trxBalanceBefore !== undefined || receipt.execution.jTrxBalanceBefore !== undefined ? (
+                <div className="mt-1 space-y-1 text-[10px] text-slate-500">
+                  <p>Balance reality: {receipt.execution.balanceReality ?? "NILE_LIVE · partial or unavailable"}</p>
+                  <p>TRX: {receipt.execution.trxBalanceBefore ?? "Unavailable"} → {receipt.execution.trxBalanceAfter ?? "Unavailable"} · Δ {receipt.execution.trxBalanceDelta ?? "Unavailable"} TRX</p>
+                  <p>jTRX: {receipt.execution.jTrxBalanceBefore ?? "Unavailable"} → {receipt.execution.jTrxBalanceAfter ?? "Unavailable"} · Δ {receipt.execution.jTrxBalanceDelta ?? "Unavailable"} jTRX</p>
+                </div>
+              ) : <p className="mt-1 text-[10px] text-slate-500">Balance before / after: {receipt.execution.balanceBefore ?? "Unavailable"} / {receipt.execution.balanceAfter ?? "Unavailable"}</p>}
               <p className="mt-1 text-[10px] text-slate-500">Chain confirmation is recorded only from TronGrid.</p>
             </div>
           </section>

@@ -31,7 +31,6 @@ export class GeminiLLMProvider implements LLMProvider {
   async extractNeeds(input: {
     userInput: string;
     conversationHistory?: Array<{ role: "user" | "assistant"; content: string }>;
-    walletHoldings?: Array<{ asset: string; amount: string }>;
   }): Promise<{
     profile: NeedsProfile;
     needsClarification: boolean;
@@ -50,21 +49,20 @@ You MUST output valid JSON matching this schema:
 {
   "holdings": [{"asset": string, "amount": string}],
   "horizonDays": number (investment horizon in days, default to 90 if unspecified),
-  "minimumLiquidUsd": string (liquid reserve required in USD, default to "300" if unspecified),
+  "minimumLiquidUsdtEquivalent": string (liquid reserve required in USDT-equivalent, default to "300" if unspecified),
   "riskLevel": "LOW" | "MEDIUM" | "HIGH",
   "maxVolatileExposurePct": string (decimal string e.g. "0.20" for 20%),
   "goal": "LIQUIDITY" | "BALANCED" | "YIELD",
   "allowedAssets": string[],
   "excludedAssets": string[],
-  "protectionClause": string (concise phrase if user specifies an excluded purpose or protection, e.g. "여행비 $300은 운용 대상에서 제외"),
+  "protectionClause": string (concise phrase if user specifies an excluded purpose or protection, e.g. "여행비 300 USDT-equivalent는 운용 대상에서 제외"),
   "missingFields": string[] (list any critical missing fields such as horizon or liquidity),
   "followUpQuestion": string (concise question in Korean if critical fields are missing),
   "summary": string (concise 2-sentence summary in Korean of confirmed profile)
 }
 
 Available assets in TRON ecosystem: USDD, USDT, TRX, sTRX, JST, SUN, BTT.
-User wallet holdings (if connected): ${JSON.stringify(input.walletHoldings || [])}.
-Only extract asset quantities explicitly present in the user's words or supplied wallet balances. Never estimate USD values, balances, APY, fees, allocation math, contract addresses, or transaction data. Leave missing fields empty and ask a follow-up question. Do NOT hallucinate APYs or contract addresses.
+Only extract hypothetical planning quantities explicitly present in the user's words. Connected Nile balances are execution capacity and are not planning holdings. Interpret the liquid reserve in USDT-equivalent only when the user states that denomination. If the user gives a USD/dollar target, do not treat it as USDT-equivalent; add "USDT-equivalent 유동성 목표" to missingFields and ask for the amount in USDT-equivalent. Never estimate prices, valuations, APY, fees, allocation math, contract addresses, or transaction data. Do NOT hallucinate APYs or contract addresses.
 Respond ONLY with the JSON object.`;
 
     const userMessage = `User Input: "${input.userInput}"`;
@@ -105,8 +103,13 @@ Respond ONLY with the JSON object.`;
       if (!rawText) throw new Error("Empty candidate from Gemini");
 
       const parsed = ExtractedProfileSchema.parse(JSON.parse(rawText));
-      const holdings = extractGroundedHoldings(input.userInput, input.walletHoldings);
+      const holdings = extractGroundedHoldings(input.userInput);
       const missingFields = [...parsed.missingFields];
+      const hasUsdtEquivalentUnit = /usdt\s*(?:-?\s*(?:equivalent|eq)|상당)/i.test(input.userInput);
+      const hasUnconvertedFiatReserve = /(?:\$|\busd\b|dollars?|달러)/i.test(input.userInput) && !hasUsdtEquivalentUnit;
+      if (hasUnconvertedFiatReserve && !missingFields.includes("USDT-equivalent 유동성 목표")) {
+        missingFields.push("USDT-equivalent 유동성 목표");
+      }
       if (!holdings.length && !missingFields.includes("보유 자산 수량")) {
         missingFields.push("보유 자산 수량");
       }
@@ -114,7 +117,7 @@ Respond ONLY with the JSON object.`;
       const profile: NeedsProfile = {
         holdings,
         horizonDays: parsed.horizonDays ?? 90,
-        minimumLiquidUsd: parsed.minimumLiquidUsd ?? "300",
+        minimumLiquidUsdtEquivalent: hasUnconvertedFiatReserve ? "0" : parsed.minimumLiquidUsdtEquivalent ?? "300",
         riskLevel: parsed.riskLevel ?? "LOW",
         maxVolatileExposurePct: parsed.maxVolatileExposurePct ?? "0.20",
         goal: parsed.goal ?? "BALANCED",
@@ -124,7 +127,9 @@ Respond ONLY with the JSON object.`;
         missingFields,
         assumptions: [
           `투자 기간 ${parsed.horizonDays ?? 90}일 기준 복리 수익 추정`,
-          `최소 유동성 $${parsed.minimumLiquidUsd ?? "300"} 상시 확보`,
+          hasUnconvertedFiatReserve
+            ? "최소 유동성 목표는 USDT-equivalent 단위 확인 전까지 미확정"
+            : `최소 유동성 ${parsed.minimumLiquidUsdtEquivalent ?? "300"} USDT-equivalent 상시 확보`,
         ],
       };
 
@@ -135,7 +140,9 @@ Respond ONLY with the JSON object.`;
       return {
         profile,
         needsClarification,
-        followUpQuestion: parsed.followUpQuestion || (!holdings.length ? "보유하신 자산과 수량을 알려주세요. 예: 1,000 USDD 또는 2,000 TRX." : undefined),
+        followUpQuestion: hasUnconvertedFiatReserve
+          ? "USD와 USDT-equivalent 간 환산 근거를 가정하지 않습니다. 최소 유동성 목표를 USDT-equivalent 수량으로 알려주세요."
+          : parsed.followUpQuestion || (!holdings.length ? "가상의 Mainnet 예산에 포함할 자산과 수량을 알려주세요. 예: 1,000 USDD 또는 2,000 TRX." : undefined),
         summary:
           parsed.summary ||
           `총 ${profile.holdings.map((h) => `${h.amount} ${h.asset}`).join(", ")} 자산을 기반으로 ${profile.horizonDays}일 동안 운용하는 ${profile.riskLevel} 위험 수준의 플랜을 구성했습니다.`,
@@ -153,7 +160,7 @@ Respond ONLY with the JSON object.`;
     profile: NeedsProfile;
     plans: AllocationPlan[];
   }): Promise<PlanExplanation & { provider: "gemini" | "mock_fallback" }> {
-    if (!this.apiKey || input.plans.some((plan) => plan.usdValuationStatus === "UNAVAILABLE")) {
+    if (!this.apiKey || input.plans.some((plan) => plan.valuationStatus === "UNAVAILABLE")) {
       return this.fallback.explainPlans(input);
     }
 
@@ -162,13 +169,13 @@ Respond ONLY with the JSON object.`;
       label: p.label,
       strategyType: p.strategyType,
       effectiveNetApy: p.effectiveNetApy,
-      usdValuationStatus: p.usdValuationStatus,
-      expectedBaseYieldUsd: p.expectedBaseYieldUsd,
-      expectedIncentiveYieldUsd: p.expectedIncentiveYieldUsd,
-      estimatedTotalCostUsd: p.estimatedTotalCostUsd,
-      liquidReserveUsd: p.liquidReserveUsd,
+      valuationStatus: p.valuationStatus,
+      expectedBaseYieldUsdtEquivalent: p.expectedBaseYieldUsdtEquivalent,
+      expectedIncentiveYieldUsdtEquivalent: p.expectedIncentiveYieldUsdtEquivalent,
+      estimatedTotalCostUsdtEquivalent: p.estimatedTotalCostUsdtEquivalent,
+      liquidReserveUsdtEquivalent: p.liquidReserveUsdtEquivalent,
       liquidReservePct: p.liquidReservePct,
-      expectedNetYieldUsd: p.expectedNetYieldUsd,
+      expectedNetYieldUsdtEquivalent: p.expectedNetYieldUsdtEquivalent,
       allocations: p.allocations.map(
         (a) => `${a.amount} ${a.asset} in ${a.productName} (${a.totalApy})`
       ),
@@ -263,7 +270,7 @@ Explain why a rebalance is triggered and propose action in concise, polite Korea
 Original Plan: ${JSON.stringify({
       label: input.originalPlan.label,
       effectiveNetApy: input.originalPlan.effectiveNetApy,
-      liquidReserveUsd: input.originalPlan.liquidReserveUsd,
+      liquidReserveUsdtEquivalent: input.originalPlan.liquidReserveUsdtEquivalent,
     })}
 Trigger Reason: ${input.triggerReason}
 Market Change: ${input.currentMarketChange}

@@ -14,11 +14,11 @@ const sampleOpportunities: YieldOpportunity[] = normalizeJustLendMarketList(
 describe("USDD Evidence & Decision Linkage Engine", () => {
   const sampleProfile: NeedsProfile = {
     holdings: [
-      { asset: "USDD", amount: "1000", usdValuation: { valueUsd: "1000", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
-      { asset: "TRX", amount: "2000", usdValuation: { valueUsd: "500", source: "test fixture", fetchedAt: null, reality: "SIMULATED" } },
+      { asset: "USDD", amount: "1000", origin: "SIMULATED", valuation: { asset: "USDD", amount: "1000", value: "1000", denomination: "USDT", source: "test fixture", fetchedAt: null, reality: "SIMULATED", stale: false } },
+      { asset: "TRX", amount: "2000", origin: "SIMULATED", valuation: { asset: "TRX", amount: "2000", value: "500", denomination: "USDT", source: "test fixture", fetchedAt: null, reality: "SIMULATED", stale: false } },
     ],
     horizonDays: 90,
-    minimumLiquidUsd: "300",
+    minimumLiquidUsdtEquivalent: "300",
     riskLevel: "LOW",
     maxVolatileExposurePct: "0.20",
     goal: "BALANCED",
