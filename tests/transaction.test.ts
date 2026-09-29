@@ -13,6 +13,8 @@ import { compassStorage } from "../src/lib/persistence/storage";
 import { estimateNileJTrxRedeemTrx, fetchNileJTrxBalance, fetchNileJTrxExchangeRate, fetchTronWalletBalances } from "../src/lib/tron/network";
 import { JUSTLEND_VALUATION_SOURCE } from "../src/domain/allocation/valuation";
 
+const POLL_TX_HASH = "a".repeat(64);
+
 describe("TRON Execution Layer — Preflight & Preview", () => {
   it("fails closed and records a stop instead of invoking the wallet for an out-of-rule pre-sign edit", async () => {
     const gate = (transaction as any).evaluateNileExecutionSafety({
@@ -396,8 +398,10 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
   it("preserves only TronGrid-reported fee and resource usage fields", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
       success: true,
+      txHash: POLL_TX_HASH,
       status: "CONFIRMED",
       blockNumber: 71234567,
+      contractResult: "SUCCESS",
       feeSun: 12345,
       energyUsageTotal: 67890,
       netUsage: 123,
@@ -420,8 +424,8 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
 
   it("rechecks a single FAILED observation before finalizing the transaction", async () => {
     const responses = [
-      { success: true, status: "FAILED", blockNumber: 71382254, contractResult: "REVERT" },
-      { success: true, status: "CONFIRMED", blockNumber: 71382254, contractResult: "SUCCESS" },
+      { success: true, txHash: POLL_TX_HASH, status: "FAILED", blockNumber: 71382254, contractResult: "REVERT" },
+      { success: true, txHash: POLL_TX_HASH, status: "CONFIRMED", blockNumber: 71382254, contractResult: "SUCCESS" },
     ];
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       new Response(JSON.stringify(responses.shift()), {
@@ -441,7 +445,7 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
   });
 
   it("finalizes a reverted transaction after the same failure is observed twice", async () => {
-    const failure = { success: true, status: "FAILED", blockNumber: 71382254, contractResult: "REVERT" };
+    const failure = { success: true, txHash: "b".repeat(64), status: "FAILED", blockNumber: 71382254, contractResult: "REVERT" };
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       new Response(JSON.stringify(failure), {
         status: 200,
@@ -458,6 +462,40 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
         contractResult: "REVERT",
       });
       expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("does not finalize one failure observation and preserves it for audit", async () => {
+    const response = { success: true, txHash: POLL_TX_HASH, status: "FAILED", blockNumber: 71382254, contractResult: "REVERT" };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(response), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    try {
+      const result = await transaction.pollTransactionStatus(POLL_TX_HASH, 1, 0, "nile");
+      expect(result.status).toBe("PENDING");
+      expect(result.observations).toHaveLength(1);
+      expect(result.observations[0]).toMatchObject({ status: "FAILED", txHash: POLL_TX_HASH, blockNumber: 71382254 });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("rejects mismatched transaction hashes and incomplete success receipts", async () => {
+    const responses = [
+      { success: true, txHash: "b".repeat(64), status: "CONFIRMED", blockNumber: 71382254, contractResult: "SUCCESS" },
+      { success: true, txHash: POLL_TX_HASH, status: "CONFIRMED", blockNumber: 71382254 },
+    ];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(responses.shift()), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    try {
+      const result = await transaction.pollTransactionStatus(POLL_TX_HASH, 2, 0, "nile");
+      expect(result.status).toBe("PENDING");
+      expect(result.observations.map((observation) => observation.status)).toEqual(["INVALID_RESPONSE", "PENDING"]);
     } finally {
       fetchSpy.mockRestore();
     }

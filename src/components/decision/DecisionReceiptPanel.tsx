@@ -9,6 +9,7 @@ import { formatReceiptAmount as humanAmount, getReceiptBalanceStatus as balanceS
 
 interface DecisionReceiptPanelProps {
   receipt: DecisionReceipt | null;
+  isCheckingChainStatus?: boolean;
 }
 
 function shortValue(value: string | null | undefined, edge = 6): string {
@@ -70,7 +71,7 @@ function compactAlternative(option: DecisionAlternative, selected: boolean, rese
   );
 }
 
-export function DecisionReceiptPanel({ receipt }: DecisionReceiptPanelProps) {
+export function DecisionReceiptPanel({ receipt, isCheckingChainStatus = false }: DecisionReceiptPanelProps) {
   if (!receipt) {
     return (
       <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xs" aria-label="Decision Receipt">
@@ -201,12 +202,19 @@ export function DecisionReceiptPanel({ receipt }: DecisionReceiptPanelProps) {
         <h3 id="receipt-chain-title" className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">6 · On-chain result</h3>
         <div className="rounded-2xl border border-slate-200 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs text-slate-800">{receipt.execution.network ?? "Nile execution"}</strong><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${receipt.execution.result === "CONFIRMED" ? "bg-emerald-50 text-emerald-700" : receipt.execution.result === "SIMULATED" ? "bg-amber-50 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{receipt.execution.result}</span></div>
+          {isCheckingChainStatus && <p role="status" className="mt-2 text-xs font-semibold text-indigo-700">Checking chain status…</p>}
+          {receipt.execution.reconciledAt && receipt.execution.result === "CONFIRMED" && <p className="mt-2 text-[10px] font-semibold text-emerald-700">✓ Chain status reconciled</p>}
           {txUrl ? <p className="mt-2 font-mono text-xs text-slate-600">TX <a className="text-indigo-700 hover:underline" href={txUrl} target="_blank" rel="noreferrer">{shortValue(receipt.execution.txHash, 8)} ↗</a></p> : <p className="mt-2 text-xs text-slate-500">No on-chain transaction recorded.</p>}
           <p className="mt-1 text-xs text-slate-500">Block {receipt.execution.blockNumber ?? "Unavailable"} · Actual fee {receipt.execution.actualFee ?? "Unavailable"}</p>
+          {receipt.execution.result === "CONFIRMED" && <div className="mt-2 space-y-1 text-xs text-slate-700">
+            <p>Result: <strong>{receipt.execution.contractResult ?? "Unavailable"}</strong></p>
+            {receipt.execution.balanceAction === "REDEEM" && receipt.execution.amount && <p>Redeemed: <strong>{humanAmount(receipt.execution.amount)} {receipt.execution.amountAsset ?? "jTRX"}</strong></p>}
+            {receipt.execution.returnedTrxAmount && <p>Returned: <strong>{humanAmount(receipt.execution.returnedTrxAmount, 6)} TRX</strong></p>}
+          </div>}
           {receipt.execution.result === "CONFIRMED" && <div className={`mt-3 flex items-start gap-2 rounded-xl p-3 text-xs ${balanceEvidenceStatus === "VERIFIED" ? "bg-emerald-50 text-emerald-800" : balanceEvidenceStatus === "PENDING" ? "bg-amber-50 text-amber-800" : "bg-rose-50 text-rose-800"}`}>
             {balanceEvidenceStatus === "VERIFIED" ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />}
             <div><strong>{statusText(balanceEvidenceStatus)}</strong>
-              {balanceEvidenceStatus === "VERIFIED" ? <p className="mt-1">TRX {humanAmount(receipt.execution.trxBalanceBefore, 4)} → {humanAmount(receipt.execution.trxBalanceAfter, 4)} · Δ {humanAmount(receipt.execution.trxBalanceDelta, 4)}<br />jTRX {humanAmount(receipt.execution.jTrxBalanceBefore, 4)} → {humanAmount(receipt.execution.jTrxBalanceAfter, 4)} · Δ {humanAmount(receipt.execution.jTrxBalanceDelta, 4)}</p> : <p className="mt-1">The transaction is confirmed; token balance deltas are not presented as verified. Inspect raw snapshots in Technical audit details.</p>}
+              {balanceEvidenceStatus === "VERIFIED" ? <p className="mt-1">TRX {humanAmount(receipt.execution.trxBalanceBefore, 4)} → {humanAmount(receipt.execution.trxBalanceAfter, 4)} · Δ {humanAmount(receipt.execution.trxBalanceDelta, 4)}<br />jTRX {humanAmount(receipt.execution.jTrxBalanceBefore, 4)} → {humanAmount(receipt.execution.jTrxBalanceAfter, 4)} · Δ {humanAmount(receipt.execution.jTrxBalanceDelta, 4)}</p> : <p className="mt-1">Transaction confirmed on-chain. Balance delta: unavailable from trusted snapshots.</p>}
               {receipt.execution.balanceReality && <p className="mt-1 text-[10px]">Reality: {receipt.execution.balanceReality.replaceAll("_", " ")}</p>}
             </div>
           </div>}
@@ -223,6 +231,12 @@ export function DecisionReceiptPanel({ receipt }: DecisionReceiptPanelProps) {
       <details className="border-t border-slate-100 pt-3">
         <summary className="cursor-pointer text-xs font-bold text-indigo-700">Technical audit details</summary>
         <p className="mt-2 text-[10px] text-slate-500">Exact saved receipt data, including full evidence, excluded markets, raw values, source URLs, transaction snapshots and integrity metadata.</p>
+        {!!receipt.execution.statusHistory?.length && <ol aria-label="Transaction status observations" className="mt-3 space-y-1 rounded-xl bg-slate-50 p-3 text-[10px] text-slate-600">
+          {receipt.execution.statusHistory.map((observation, index) => <li key={`${observation.source}-${observation.observedAt ?? "unknown"}-${index}`}>
+            {observation.status} · {observation.source} · {observation.observedAt ? new Date(observation.observedAt).toLocaleString() : "timestamp not recorded"}
+            {observation.blockNumber ? ` · block ${observation.blockNumber}` : ""}{observation.contractResult ? ` · ${observation.contractResult}` : ""}
+          </li>)}
+        </ol>}
         <pre className="mt-2 max-h-[32rem] overflow-auto rounded-xl bg-slate-950 p-4 text-[10px] leading-relaxed text-slate-100">{JSON.stringify(receipt, null, 2)}</pre>
       </details>
     </section>

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { trongridClient, TronNetwork } from "@/lib/tron/trongrid-client";
+import { sumInternalTrxTransfersToOwner, trongridClient, TronNetwork } from "@/lib/tron/trongrid-client";
 import { TRON_NETWORKS } from "@/lib/tron/network";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +31,16 @@ export async function POST(request: NextRequest) {
 
     const { txHash, network } = parseResult.data;
     const receipt = await trongridClient.getTransactionInfo(txHash, network as TronNetwork);
+    let returnedTrxSun: number | undefined;
+    if (receipt.status === "CONFIRMED") {
+      try {
+        const transaction = await trongridClient.getTransaction(txHash, network as TronNetwork);
+        const ownerAddress = (transaction?.raw_data as any)?.contract?.[0]?.parameter?.value?.owner_address;
+        if (typeof ownerAddress === "string") returnedTrxSun = sumInternalTrxTransfersToOwner(receipt.rawReceipt, ownerAddress) ?? undefined;
+      } catch {
+        // Returning amount is auxiliary; a failed secondary lookup must not affect the verified receipt status.
+      }
+    }
 
     const explorerBase = TRON_NETWORKS[network].explorer;
     const explorerUrl = `${explorerBase}/#/transaction/${txHash}`;
@@ -48,6 +58,7 @@ export async function POST(request: NextRequest) {
       energyFeeSun: receipt.energyFeeSun,
       energyUsageTotal: receipt.energyUsageTotal,
       netUsage: receipt.netUsage,
+      returnedTrxSun,
       explorerUrl,
       timestamp: new Date().toISOString(),
     });

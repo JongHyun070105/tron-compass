@@ -35,6 +35,7 @@ import {
   evaluateDecisionAssumptions,
 } from "@/domain/decision/receipt";
 import { buildInvestmentRules, evaluateDecisionRules } from "@/domain/allocation/rules";
+import { isReceiptEligibleForChainReconciliation, reconcileDecisionReceipt } from "@/domain/decision/transaction-reconciliation";
 import {
   detectWalletNetwork,
   readWalletBalanceSnapshot,
@@ -46,6 +47,7 @@ import {
   requestTronLinkAccount,
   subscribeToTronLinkEvents,
 } from "@/lib/tron/tronlink-provider";
+import { pollTransactionStatus } from "@/lib/tron/transaction";
 import { PlanExplanation } from "@/lib/ai/schemas";
 import {
   Sparkles,
@@ -141,6 +143,8 @@ export default function HomePage() {
   const manuallySelectedDemoRef = useRef(false);
   const [activeReceipt, setActiveReceipt] = useState<DecisionReceipt | null>(null);
   const [savedReceipts, setSavedReceipts] = useState<DecisionReceipt[]>([]);
+  const [reconcilingReceiptId, setReconcilingReceiptId] = useState<string | null>(null);
+  const reconciliationStartedRef = useRef(new Set<string>());
   const [selectedPlanForExecution, setSelectedPlanForExecution] = useState<AllocationPlan | null>(null);
   const [selectedLegForExecution, setSelectedLegForExecution] = useState<AllocationLeg | null>(null);
   const [executionMode, setExecutionMode] = useState<"SUPPLY" | "REDEEM">("SUPPLY");
@@ -530,12 +534,46 @@ export default function HomePage() {
     };
   }, [walletState.isDemoMode, clearRealWalletState, refreshWalletState]);
 
-  const saveReceipt = async (receipt: DecisionReceipt) => {
+  const saveReceipt = useCallback(async (receipt: DecisionReceipt) => {
     const updated = await refreshDecisionReceiptIntegrity(receipt);
     await compassStorage.saveDecisionReceipt(updated);
     setActiveReceipt(updated);
     setSavedReceipts((previous) => [updated, ...previous.filter((item) => item.id !== updated.id)]);
-  };
+  }, []);
+
+  useEffect(() => {
+    const receipt = activeReceipt;
+    const txHash = receipt?.execution.txHash;
+    if (!receipt || !txHash || !isReceiptEligibleForChainReconciliation(receipt) ||
+        reconciliationStartedRef.current.has(receipt.id)) return;
+
+    reconciliationStartedRef.current.add(receipt.id);
+    setReconcilingReceiptId(receipt.id);
+    void (async () => {
+      try {
+        const chainResult = await pollTransactionStatus(txHash, 4, 750, "nile");
+        const current = await compassStorage.getDecisionReceiptById(receipt.id) ?? receipt;
+        const updated = reconcileDecisionReceipt(current, chainResult);
+        await saveReceipt(updated);
+
+        const executionStatus = updated.execution.result === "CONFIRMED"
+          ? "CONFIRMED"
+          : updated.execution.result === "FAILED" ? "FAILED" : "PENDING";
+        await compassStorage.updateExecutionByTxHash(txHash, (record) => ({ ...record, status: executionStatus }));
+
+        if (updated.execution.result === "CONFIRMED") {
+          // Read the currently connected account only; reconciliation never requests wallet access or signs.
+          const tronWeb = getWalletTronWeb(getTronLinkProvider());
+          const address = tronWeb?.defaultAddress?.base58;
+          if (address) await refreshWalletState({ address, clearStale: false, forceFresh: true });
+        }
+      } catch (error) {
+        console.warn("Decision Receipt chain reconciliation failed:", error);
+      } finally {
+        setReconcilingReceiptId((current) => current === receipt.id ? null : current);
+      }
+    })();
+  }, [activeReceipt, refreshWalletState, saveReceipt]);
 
   const createReceiptForPlan = async (
     plan: AllocationPlan,
@@ -820,7 +858,7 @@ export default function HomePage() {
                 onRequestAiExplanation={handleRequestAiExplanation}
               />
             </div>
-            <DecisionReceiptPanel receipt={activeReceipt} />
+            <DecisionReceiptPanel receipt={activeReceipt} isCheckingChainStatus={reconcilingReceiptId === activeReceipt?.id} />
           </div>
         )}
 
@@ -849,7 +887,7 @@ export default function HomePage() {
               onAssumptionsEvaluated={(title, assumptions, mode) => handleReplayAssumptions(title, assumptions, mode)}
               onApplyRebalance={handleApplyRebalance}
             />
-            <DecisionReceiptPanel receipt={activeReceipt} />
+            <DecisionReceiptPanel receipt={activeReceipt} isCheckingChainStatus={reconcilingReceiptId === activeReceipt?.id} />
           </div>
         )}
       </main>

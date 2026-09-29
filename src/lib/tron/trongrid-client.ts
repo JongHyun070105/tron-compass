@@ -53,6 +53,22 @@ export interface TronTransactionReceipt {
   rawReceipt?: any;
 }
 
+export function sumInternalTrxTransfersToOwner(rawReceipt: unknown, ownerAddress: string): number | null {
+  const internalTransactions = (rawReceipt as any)?.internal_transactions;
+  if (!ownerAddress || !Array.isArray(internalTransactions)) return null;
+  const total = internalTransactions.reduce((sum: number, transfer: any) => {
+    if (typeof transfer?.transferTo_address !== "string" ||
+        transfer.transferTo_address.toLowerCase() !== ownerAddress.toLowerCase() ||
+        !Array.isArray(transfer.callValueInfo)) return sum;
+    return transfer.callValueInfo.reduce((transferSum: number, value: any) => {
+      if (value?.tokenId || !Number.isSafeInteger(value?.callValue) || value.callValue < 0) return transferSum;
+      const next = transferSum + value.callValue;
+      return Number.isSafeInteger(next) ? next : transferSum;
+    }, sum);
+  }, 0);
+  return total > 0 ? total : null;
+}
+
 // Zod schemas for validating TronGrid responses
 const TronGridAccountItemSchema = z.object({
   address: z.string().optional(),
@@ -444,7 +460,8 @@ export class TronGridClient {
         energyFeeSun: receipt?.energy_fee,
         energyUsageTotal: receipt?.energy_usage_total,
         netUsage: receipt?.net_usage,
-        rawReceipt: info,
+        // Keep the raw receipt for server-side extraction of contract events and internal TRX transfers.
+        rawReceipt: rawInfo,
       };
     }
 

@@ -235,6 +235,16 @@ export interface TransactionStatusResult {
   energyFeeSun?: number;
   contractResult?: string;
   timestamp?: number;
+  returnedTrxSun?: number;
+  observations: TransactionStatusObservation[];
+}
+
+export interface TransactionStatusObservation {
+  txHash: string | null;
+  status: "PENDING" | "CONFIRMED" | "FAILED" | "NOT_FOUND" | "INVALID_RESPONSE";
+  observedAt: string;
+  blockNumber?: number;
+  contractResult?: string;
 }
 
 /** Returns the observed after-minus-before token balance delta at token precision. */
@@ -643,6 +653,7 @@ export async function pollTransactionStatus(
   network: "nile" | "mainnet" = "nile"
 ): Promise<TransactionStatusResult> {
   let previousFailure: { blockNumber?: number; contractResult?: string } | null = null;
+  const observations: TransactionStatusObservation[] = [];
   const toStatusResult = (data: any, status: "CONFIRMED" | "FAILED"): TransactionStatusResult => ({
     txHash,
     status,
@@ -653,6 +664,8 @@ export async function pollTransactionStatus(
     energyFeeSun: Number.isSafeInteger(data.energyFeeSun) && data.energyFeeSun >= 0 ? data.energyFeeSun : undefined,
     contractResult: data.contractResult,
     timestamp: data.blockTimestamp,
+    returnedTrxSun: Number.isSafeInteger(data.returnedTrxSun) && data.returnedTrxSun >= 0 ? data.returnedTrxSun : undefined,
+    observations,
   });
 
   for (let i = 0; i < maxAttempts; i++) {
@@ -665,16 +678,32 @@ export async function pollTransactionStatus(
 
       if (res.ok) {
         const data = await res.json();
-        if (data.success) {
-          if (data.status === "CONFIRMED") {
+        const responseHash = typeof data.txHash === "string" ? data.txHash : null;
+        const observedAt = typeof data.timestamp === "string" && !Number.isNaN(Date.parse(data.timestamp))
+          ? data.timestamp
+          : new Date().toISOString();
+        const exactHash = responseHash?.toLowerCase() === txHash.toLowerCase();
+        const blockNumber = Number.isSafeInteger(data.blockNumber) && data.blockNumber > 0
+          ? data.blockNumber as number
+          : undefined;
+        const contractResult = typeof data.contractResult === "string" ? data.contractResult : undefined;
+
+        if (!exactHash) {
+          observations.push({ txHash: responseHash, status: "INVALID_RESPONSE", observedAt, blockNumber, contractResult });
+          previousFailure = null;
+        } else if (data.success) {
+          if (data.status === "CONFIRMED" && blockNumber !== undefined && contractResult === "SUCCESS") {
+            observations.push({ txHash: responseHash, status: "CONFIRMED", observedAt, blockNumber, contractResult });
             return toStatusResult(data, "CONFIRMED");
           }
           if (data.status === "FAILED") {
             const failure = {
-              blockNumber: data.blockNumber,
-              contractResult: data.contractResult,
+              blockNumber,
+              contractResult,
             };
-            const sameFailure = previousFailure !== null &&
+            const explicitFailure = blockNumber !== undefined && !!contractResult && contractResult !== "SUCCESS";
+            observations.push({ txHash: responseHash, status: "FAILED", observedAt, blockNumber, contractResult });
+            const sameFailure = explicitFailure && previousFailure !== null &&
               previousFailure.blockNumber === failure.blockNumber &&
               previousFailure.contractResult === failure.contractResult;
 
@@ -682,12 +711,20 @@ export async function pollTransactionStatus(
               return toStatusResult(data, "FAILED");
             }
 
-            previousFailure = failure;
+            previousFailure = explicitFailure ? failure : null;
           } else {
             // PENDING / NOT_FOUND breaks the consecutive-failure requirement.
+            observations.push({
+              txHash: responseHash,
+              status: data.status === "NOT_FOUND" ? "NOT_FOUND" : "PENDING",
+              observedAt,
+              blockNumber,
+              contractResult,
+            });
             previousFailure = null;
           }
         } else {
+          observations.push({ txHash: responseHash, status: "INVALID_RESPONSE", observedAt, blockNumber, contractResult });
           previousFailure = null;
         }
       } else {
@@ -706,5 +743,6 @@ export async function pollTransactionStatus(
   return {
     txHash,
     status: "PENDING",
+    observations,
   };
 }

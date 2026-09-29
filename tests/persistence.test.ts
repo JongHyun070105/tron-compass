@@ -30,4 +30,31 @@ describe("Decision Receipt persistence", () => {
     expect(updated.stops).toHaveLength(1);
     expect((await (persistence.compassStorage as any).getDecisionReceiptById(receipt.id)).stops).toHaveLength(1);
   });
+
+  it("updates an existing execution by transaction hash without inserting a new execution", async () => {
+    const txHash = "c".repeat(64);
+    await persistence.compassStorage.recordExecution({
+      id: "execution-reconcile-existing",
+      planId: "plan-a",
+      walletAddress: "TWallet",
+      txHash,
+      asset: "jTRX",
+      amount: "100",
+      targetContract: "TContract",
+      network: "NILE",
+      dataScope: "LIVE_NILE",
+      status: "FAILED",
+      timestamp: "2026-09-29T00:00:00.000Z",
+    });
+
+    const updated = await persistence.compassStorage.updateExecutionByTxHash(txHash, (record) => ({
+      ...record,
+      status: "CONFIRMED",
+    }));
+    const matching = (await persistence.compassStorage.getAllExecutions()).filter((item) => item.txHash === txHash);
+
+    expect(updated).toMatchObject({ id: "execution-reconcile-existing", status: "CONFIRMED" });
+    expect(matching).toHaveLength(1);
+    expect(await persistence.compassStorage.updateExecutionByTxHash("d".repeat(64), (record) => record)).toBeNull();
+  });
 });

@@ -113,6 +113,27 @@ class CompassStorageService {
     return Array.from(this.memoryExecutions.values());
   }
 
+  async updateExecutionByTxHash(
+    txHash: string,
+    update: (record: ExecutionRecord) => ExecutionRecord
+  ): Promise<ExecutionRecord | null> {
+    const existing = await this.getAllExecutions();
+    const record = existing.find((item) => item.txHash.toLowerCase() === txHash.toLowerCase());
+    if (!record) return null;
+
+    const updatedRecord = update(record);
+    this.memoryExecutions.set(updatedRecord.id, updatedRecord);
+    if (this.isBrowser()) {
+      try {
+        const updated = existing.map((item) => item.id === record.id ? updatedRecord : item);
+        localStorage.setItem(STORAGE_KEY_EXECUTIONS, JSON.stringify(updated));
+      } catch (err) {
+        console.warn("Storage updateExecutionByTxHash error:", err);
+      }
+    }
+    return updatedRecord;
+  }
+
   async getExecutions(params: {
     walletAddress?: string;
     dataScope?: CompassDataScope;

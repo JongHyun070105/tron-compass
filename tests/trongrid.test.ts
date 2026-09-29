@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { TronGridClient } from "../src/lib/tron/trongrid-client";
+import { TronGridClient, sumInternalTrxTransfersToOwner } from "../src/lib/tron/trongrid-client";
 import { buildPreflightChecks, determineTransactionState } from "../src/lib/tron/transaction";
 import fs from "fs";
 import path from "path";
@@ -14,6 +14,17 @@ describe("TronGridClient Server-Side Unit Tests", () => {
   afterEach(() => {
     process.env = originalEnv;
     vi.restoreAllMocks();
+  });
+
+  it("extracts only native TRX internal transfers returned to the transaction owner", () => {
+    const owner = "41abcdef";
+    expect(sumInternalTrxTransfersToOwner({ internal_transactions: [
+      { transferTo_address: owner.toUpperCase(), callValueInfo: [{ callValue: 1_117_763 }] },
+      { transferTo_address: "41other", callValueInfo: [{ callValue: 9_000_000 }] },
+      { transferTo_address: owner, callValueInfo: [{ callValue: 123, tokenId: "1002000" }] },
+      { transferTo_address: owner, callValueInfo: [{ callValue: -1 }, { callValue: Number.MAX_SAFE_INTEGER }] },
+    ] }, owner)).toBe(1_117_763);
+    expect(sumInternalTrxTransfersToOwner({ internal_transactions: [] }, owner)).toBeNull();
   });
 
   it("adds TRON-PRO-API-KEY header server-side when key is present", async () => {

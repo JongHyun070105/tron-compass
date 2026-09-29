@@ -83,6 +83,15 @@ export interface DecisionReview {
   proposalPlanId: string | null;
 }
 
+export interface ExecutionStatusObservation {
+  status: string;
+  source: string;
+  observedAt: string | null;
+  txHash?: string | null;
+  blockNumber?: number | null;
+  contractResult?: string | null;
+}
+
 export interface DecisionReceiptDraft {
   id: string;
   parentId?: string | null;
@@ -112,7 +121,7 @@ export interface DecisionReceipt extends DecisionReceiptDraft {
     txHash: string | null;
     blockNumber: number | null;
     contractResult?: string | null;
-    result: "PREPARED" | "AWAITING_SIGNATURE" | "BROADCAST" | "PENDING" | "CONFIRMED" | "FAILED" | "SIMULATED";
+    result: "PREPARED" | "AWAITING_SIGNATURE" | "BROADCAST" | "PENDING" | "CONFIRMED" | "FAILED" | "REVERT" | "UNKNOWN" | "SIMULATED";
     energyUsed: number | null;
     netUsed: number | null;
     actualFee: string | null;
@@ -127,6 +136,9 @@ export interface DecisionReceipt extends DecisionReceiptDraft {
     balanceReality?: "NILE_LIVE" | null;
     balanceAction?: "SUPPLY" | "REDEEM" | null;
     balanceEvidenceStatus?: "PENDING" | "VERIFIED" | "STALE" | "UNAVAILABLE";
+    returnedTrxAmount?: string | null;
+    reconciledAt?: string | null;
+    statusHistory?: ExecutionStatusObservation[];
   };
   stops: DecisionStopRecord[];
   integrity: { engineVersion: string; decisionHash: string };
