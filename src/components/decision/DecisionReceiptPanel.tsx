@@ -1,51 +1,78 @@
 "use client";
 
 import React from "react";
-import { CheckCircle2, CircleHelp, FileCheck2, ShieldAlert } from "lucide-react";
-import { DecisionReceipt } from "@/domain/decision/receipt";
-import { toPercentString } from "@/lib/math/decimal";
+import { CheckCircle2, FileCheck2, ShieldAlert } from "lucide-react";
+import { DecisionAlternative, DecisionReceipt } from "@/domain/decision/receipt";
+import { Decimal, toPercentString } from "@/lib/math/decimal";
+import { formatReceiptAmount as humanAmount, getReceiptBalanceStatus as balanceStatus, receiptAssetIds, selectReceiptEvidence } from "@/domain/decision/receipt-presentation";
 
 interface DecisionReceiptPanelProps {
   receipt: DecisionReceipt | null;
 }
 
-function evidenceLabel(field: string): string {
-  if (field.startsWith("portfolio.holdings.")) {
-    return field.endsWith(".origin")
-      ? `${field.split(".")[2]} planning input reality`
-      : `${field.split(".")[2]} USDT-equivalent valuation`;
-  }
-  if (field.endsWith(".baseApy")) return "Base yield";
-  if (field.endsWith(".incentiveApy")) return "USDD mining incentive";
-  if (field.endsWith(".totalApy")) return "Total APY (base + incentive)";
-  if (field === "usdd.collateralRatioPct") return "USDD collateral ratio";
-  if (field.endsWith(".utilizationPct")) return "Utilization";
-  if (field.endsWith(".poolCapacitySourceUnits")) return "Pool cash + borrows (source units)";
-  if (field.endsWith(".estimatedEntryCostUsdtEquivalent")) return "Estimated entry cost";
-  if (field.endsWith(".estimatedExitCostUsdtEquivalent")) return "Estimated exit cost";
-  return field;
+function shortValue(value: string | null | undefined, edge = 6): string {
+  if (!value) return "Unavailable";
+  return value.length > edge * 2 + 3 ? `${value.slice(0, edge)}…${value.slice(-edge)}` : value;
 }
 
-function evidenceValue(field: string, value: string | null): string {
-  if (value === null) return "Unavailable";
-  if (field.endsWith(".baseApy") || field.endsWith(".incentiveApy") || field.endsWith(".totalApy") || field.endsWith(".utilizationPct")) {
-    return toPercentString(value);
+function sourceName(source: string): string {
+  try {
+    const host = new URL(source).hostname.replace(/^www\./, "");
+    if (host.includes("just")) return "JustLend";
+    if (host.includes("usdd")) return "USDD";
+    return host;
+  } catch {
+    return source;
   }
-  if (field.endsWith(".usdtEquivalentValue")) return `${value} USDT-equivalent`;
-  return value;
 }
 
-function statusStyle(status: string): string {
-  if (status === "PASS") return "bg-emerald-50 text-emerald-700 border-emerald-200";
-  if (status === "FAIL") return "bg-rose-50 text-rose-700 border-rose-200";
-  if (status === "WARNING") return "bg-amber-50 text-amber-800 border-amber-200";
-  return "bg-slate-100 text-slate-600 border-slate-200";
+function expectedNet(option: DecisionAlternative): string {
+  if (option.valuationStatus === "UNAVAILABLE") return "Unavailable";
+  if (option.incentiveYield === null || option.estimatedCost === null) return "Unavailable";
+  try {
+    const amount = new Decimal(option.baseYield).plus(option.incentiveYield).minus(option.estimatedCost).toFixed(2);
+    return option.valuationStatus === "SIMULATED" ? `SIMULATED ${amount}` : amount;
+  } catch {
+    return "Unavailable";
+  }
+}
+
+function statusText(status: ReturnType<typeof balanceStatus>): string {
+  if (status === "VERIFIED") return "Balance directions verified";
+  if (status === "STALE") return "Balance evidence stale · no verified delta";
+  if (status === "PENDING") return "Balance refresh pending";
+  return "Balance evidence unavailable";
+}
+
+function explorerUrl(receipt: DecisionReceipt): string | null {
+  if (!receipt.execution.txHash) return null;
+  const isNile = receipt.execution.network?.toLowerCase().includes("nile");
+  return `${isNile ? "https://nile.tronscan.org" : "https://tronscan.org"}/#/transaction/${receipt.execution.txHash}`;
+}
+
+function compactAlternative(option: DecisionAlternative, selected: boolean, reserve: string, horizon: string) {
+  const passed = option.ruleEvaluation.every((item) => item.passed);
+  return (
+    <article key={option.planId} className={`rounded-2xl border p-4 ${selected ? "border-indigo-200 bg-indigo-50/60" : "border-slate-200 bg-white"}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-sm font-bold text-slate-900">{selected ? "Selected plan" : "Alternative considered"} · {option.planId}</h4>
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{option.executionReality.replaceAll("_", " ")}</span>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-4">
+        <div><span className="block text-slate-500">Expected net</span><b className="text-slate-900">{expectedNet(option)} USDT-eq</b></div>
+        <div><span className="block text-slate-500">Risk</span><b className="text-slate-900">{option.risks[0] ?? "No specific risk recorded"}</b></div>
+        <div><span className="block text-slate-500">Minimum reserve</span><b className="text-slate-900">{reserve} USDT-eq</b></div>
+        <div><span className="block text-slate-500">Horizon</span><b className="text-slate-900">{horizon}</b></div>
+      </div>
+      <p className="mt-2 text-[10px] text-slate-500">Plan rules: {passed ? "PASS" : "STOP"} · {option.valuationStatus ?? "valuation status unavailable"}</p>
+    </article>
+  );
 }
 
 export function DecisionReceiptPanel({ receipt }: DecisionReceiptPanelProps) {
   if (!receipt) {
     return (
-      <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xs">
+      <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xs" aria-label="Decision Receipt">
         <div className="flex items-center gap-3">
           <FileCheck2 className="h-5 w-5 text-indigo-600" />
           <div>
@@ -57,195 +84,147 @@ export function DecisionReceiptPanel({ receipt }: DecisionReceiptPanelProps) {
     );
   }
 
-  const selected = receipt.alternatives.find((item) => item.planId === receipt.selection.planId);
+  const selected = receipt.alternatives.find((option) => option.planId === receipt.selection.planId);
+  const alternative = receipt.alternatives.find((option) => option.planId !== receipt.selection.planId);
+  const visibleOptions = [selected, alternative].filter((item): item is DecisionAlternative => !!item);
+  const evidence = selectReceiptEvidence(receipt, visibleOptions);
+  const marketEvidence = evidence.filter((item) => !item.field.startsWith("portfolio.holdings."));
+  const valuationEvidence = evidence.filter((item) => item.field.startsWith("portfolio.holdings."));
   const latestReview = receipt.reviews[receipt.reviews.length - 1];
-  const evidence = receipt.evidence;
+  const uniqueQuotes = [...new Set(receipt.rules.items.map((rule) => rule.sourceQuote).filter((quote): quote is string => !!quote))];
+  const reserveRule = receipt.rules.items.find((rule) => rule.type === "MINIMUM_LIQUIDITY");
+  const reserve = reserveRule ? humanAmount(reserveRule.value) : "Unavailable";
+  const horizon = selected?.exitCondition.map((condition) => condition.match(/(\d+)\s*days?/i)?.[1]).find(Boolean)
+    ? `${selected.exitCondition.map((condition) => condition.match(/(\d+)\s*days?/i)?.[1]).find(Boolean)} days`
+    : "Not recorded";
+  const included = [...new Map(receipt.screening.included.map((item) => [item.opportunityId, item])).values()];
+  const excluded = [...new Map(receipt.screening.excluded.map((item) => [item.opportunityId, item])).values()];
+  const balanceEvidenceStatus = balanceStatus(receipt);
+  const txUrl = explorerUrl(receipt);
+  const approval = receipt.approval.shown;
+  const assumptions = receipt.assumptions.filter((item) => {
+    const id = item.sourceField.split(".")[0]?.toLowerCase();
+    return visibleOptions.length === 0 || receiptAssetIds(visibleOptions).has(id) || /usdd/i.test(`${item.sourceField} ${item.description}`);
+  }).slice(0, 3);
 
   return (
-    <section className="rounded-3xl border border-slate-200 bg-white p-6 sm:p-8 shadow-xs space-y-7" aria-label="Decision Receipt">
-      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 pb-5">
+    <section className="space-y-5 rounded-3xl border border-slate-200 bg-white p-5 shadow-xs sm:p-7" aria-label="Decision Receipt">
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-4">
         <div className="flex items-start gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-700">
-            <FileCheck2 className="h-5 w-5" />
-          </div>
+          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-700"><FileCheck2 className="h-5 w-5" /></div>
           <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-xl font-extrabold tracking-tight text-slate-900">Decision Receipt #{receipt.id.slice(-6)}</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-lg font-extrabold tracking-tight text-slate-900">Decision Receipt #{receipt.id.slice(-6)}</h2>
               {receipt.parentId && <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">CHILD OF #{receipt.parentId.slice(-6)}</span>}
             </div>
-            <p className="mt-1 text-xs text-slate-500">WHY THIS POSITION EXISTS · Frozen {new Date(receipt.createdAt).toLocaleString()}</p>
+            <p className="mt-1 text-xs text-slate-500">Frozen {new Date(receipt.createdAt).toLocaleString()}</p>
           </div>
         </div>
-        <div className="rounded-xl bg-slate-50 px-3 py-2 text-right">
+        <div className="rounded-xl bg-slate-50 px-3 py-2">
           <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Decision integrity</span>
-          <span className="font-mono text-xs font-bold text-slate-700" title={receipt.integrity.decisionHash}>
-            SHA-256 {receipt.integrity.decisionHash ? `${receipt.integrity.decisionHash.slice(0, 12)}…` : "Unavailable"}
-          </span>
+          <span className="font-mono text-xs font-bold text-slate-700" title={receipt.integrity.decisionHash}>SHA-256 {shortValue(receipt.integrity.decisionHash, 6)}</span>
         </div>
       </header>
 
-      <div className="grid gap-7 lg:grid-cols-2">
-        <div className="space-y-6">
-          <section>
-            <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">My Rules · v{receipt.rules.version}</h3>
-            {receipt.rules.items.length ? (
-              <div className="space-y-2">
-                {receipt.rules.items.map((rule) => (
-                  <div key={rule.id} className="flex items-start gap-2 rounded-xl border border-slate-100 bg-slate-50/70 p-3 text-xs">
-                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                    <div>
-                      <strong className="text-slate-900">{rule.id} · {rule.type.replaceAll("_", " ")} v{rule.version}</strong>
-                      <p className="mt-0.5 text-slate-600">{rule.predicate} {rule.type === "MAX_VOLATILE_EXPOSURE" ? toPercentString(rule.value) : rule.value}</p>
-                      {rule.sourceQuote && <p className="mt-1 border-l-2 border-indigo-200 pl-2 text-[11px] text-slate-500">“{rule.sourceQuote}”</p>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="rounded-xl bg-amber-50 p-3 text-xs text-amber-800">My Rules have not been confirmed. Signing is blocked until confirmation.</p>
-            )}
-          </section>
+      <section aria-labelledby="receipt-rules-title">
+        <div className="mb-2 flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-600" /><h3 id="receipt-rules-title" className="text-xs font-bold uppercase tracking-wide text-slate-500">1 · Why this position exists · My Rules v{receipt.rules.version}</h3></div>
+        {receipt.rules.items.length ? <ul className="grid gap-2 sm:grid-cols-2">
+          {receipt.rules.items.map((rule) => (
+            <li key={rule.id} className="rounded-xl border border-slate-100 bg-slate-50/70 p-3 text-xs">
+              <strong className="text-slate-900">{rule.id} · {rule.type.replaceAll("_", " ")}</strong>
+              <p className="mt-1 text-slate-600">{rule.predicate} {rule.type === "MAX_VOLATILE_EXPOSURE" ? toPercentString(rule.value) : `${humanAmount(rule.value)}${rule.type === "MINIMUM_LIQUIDITY" ? " USDT-eq" : ""}`}</p>
+            </li>
+          ))}
+        </ul> : <p className="rounded-xl bg-amber-50 p-3 text-xs text-amber-800">My Rules have not been confirmed. Signing is blocked until confirmation.</p>}
+        {!!uniqueQuotes.length && <details className="mt-2 text-xs text-slate-500"><summary className="cursor-pointer font-semibold">Original user request</summary><p className="mt-2 rounded-lg bg-slate-50 p-3">“{uniqueQuotes.join(" · ")}”</p></details>}
+      </section>
 
-          <section>
-            <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Market evidence</h3>
-            {evidence.length ? (
-              <div className="space-y-2">
-                {evidence.map((item) => (
-                  <div key={item.id} className="rounded-xl border border-slate-100 p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <strong className="text-xs text-slate-800">{evidenceLabel(item.field)}</strong>
-                      <span className="font-mono text-xs font-bold text-slate-900">{evidenceValue(item.field, item.value)}</span>
-                    </div>
-                    <div className="mt-1.5 flex flex-wrap gap-x-2 text-[10px] text-slate-500">
-                      <span>{item.reality}{item.observedReality ? ` · observed ${item.observedReality}` : ""}</span>
-                      <span>·</span>
-                      <span>{item.fetchedAt ? new Date(item.fetchedAt).toLocaleString() : "fetch time unavailable"}</span>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-slate-400" title={item.terms ?? ""}>{item.terms ?? "Terms unavailable"}</p>
-                    {item.source.startsWith("https://") || item.source.startsWith("http://")
-                      ? <a className="mt-1 block truncate text-[10px] text-indigo-600 hover:underline" href={item.source} target="_blank" rel="noreferrer">{item.source}</a>
-                      : <span className="mt-1 block truncate text-[10px] text-slate-500">{item.source}</span>}
-                  </div>
-                ))}
-              </div>
-            ) : <p className="text-xs text-slate-500">Evidence is unavailable.</p>}
-          </section>
+      <section aria-labelledby="receipt-decision-title">
+        <h3 id="receipt-decision-title" className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">2 · Decision</h3>
+        {visibleOptions.length ? <div className="space-y-2">{visibleOptions.map((option) => compactAlternative(option, option.planId === receipt.selection.planId, reserve, horizon))}</div> : <p className="text-xs text-slate-500">No selected plan was recorded.</p>}
+      </section>
 
-          <section>
-            <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Assumptions</h3>
-            <div className="space-y-2">
-              {(latestReview?.assumptions ?? receipt.assumptions).map((item) => (
-                <div key={item.id} className="flex items-start justify-between gap-3 rounded-xl border border-slate-100 p-3">
-                  <div>
-                    <strong className="text-xs text-slate-800">{item.id} · {item.description}</strong>
-                    <p className="mt-1 text-[10px] text-slate-500">Threshold {item.predicate} {item.threshold} · {item.thresholdProvenance.replaceAll("_", " ")}</p>
-                    {item.reason && <p className="mt-1 text-[10px] text-amber-700">{item.reason}</p>}
-                  </div>
-                  <span className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-bold ${statusStyle(item.status)}`}>{item.status}</span>
-                </div>
-              ))}
-              {!receipt.assumptions.length && <p className="text-xs text-slate-500">No assumptions were supported by this decision evidence.</p>}
+      <section aria-labelledby="receipt-evidence-title">
+        <div className="mb-2 flex items-center justify-between gap-2"><h3 id="receipt-evidence-title" className="text-xs font-bold uppercase tracking-wide text-slate-500">3 · Key evidence</h3><span className="text-[10px] text-slate-400">LIVE MAINNET · source feed · SNAPSHOT · frozen at decision</span></div>
+        {marketEvidence.length || valuationEvidence.length ? <div className="grid gap-2 sm:grid-cols-2">
+          {marketEvidence.map((item) => (
+            <div key={item.id} className="rounded-xl border border-slate-100 p-3">
+              <div className="flex items-center justify-between gap-2"><strong className="text-xs text-slate-900">{item.field.split(".")[0]}</strong><span className="text-[10px] text-slate-500">{item.observedReality ?? item.reality}</span></div>
+              <p className="mt-1 text-xs text-slate-700">{item.field.endsWith("baseApy") ? "Base" : "Incentive"} {item.value === null ? "Unavailable" : toPercentString(item.value)}</p>
+              <p className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-slate-400">
+                {item.fetchedAt ? `Fetched ${new Date(item.fetchedAt).toLocaleTimeString()}` : "Fetch time unavailable"} · {item.source.startsWith("http") ? <a className="text-indigo-600 hover:underline" href={item.source} target="_blank" rel="noreferrer">{sourceName(item.source)} ↗</a> : sourceName(item.source)}
+              </p>
             </div>
-          </section>
+          ))}
+          {valuationEvidence.map((item) => (
+            <div key={item.id} className="rounded-xl border border-slate-100 p-3">
+              <div className="flex items-center justify-between gap-2"><strong className="text-xs text-slate-900">{item.field.split(".")[2]} valuation</strong><span className="text-[10px] text-slate-500">{item.observedReality ?? item.reality}</span></div>
+              <p className="mt-1 text-xs text-slate-700">{humanAmount(item.value, 2)} USDT-eq</p>
+              <p className="mt-1 text-[10px] text-slate-400">{item.fetchedAt ? `Fetched ${new Date(item.fetchedAt).toLocaleTimeString()}` : "Planning input · snapshot"}</p>
+            </div>
+          ))}
+        </div> : <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">No source-backed evidence for the selected plan was recorded.</p>}
+      </section>
+
+      <section aria-labelledby="receipt-assumptions-title">
+        <h3 id="receipt-assumptions-title" className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">4 · Assumptions</h3>
+        {assumptions.length ? <div className="grid gap-2 sm:grid-cols-3">{assumptions.map((item) => (
+          <div key={item.id} className="rounded-xl border border-slate-100 p-3 text-xs">
+            <div className="flex items-center justify-between gap-2"><strong className="text-slate-900">{item.id}</strong><span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${item.status === "PASS" ? "bg-emerald-50 text-emerald-700" : item.status === "FAIL" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-800"}`}>{item.status}</span></div>
+            <p className="mt-1 text-slate-600">{item.description}</p>
+          </div>
+        ))}</div> : <p className="text-xs text-slate-500">No decision assumptions were recorded.</p>}
+      </section>
+
+      <section aria-labelledby="receipt-screening-title" className="rounded-xl bg-slate-50 p-3">
+        <h3 id="receipt-screening-title" className="text-xs font-bold uppercase tracking-wide text-slate-600">Screening · {included.length} included · {excluded.length} excluded</h3>
+        {!!included.length && <p className="mt-1 text-xs text-emerald-800">Included: {included.map((item) => item.item).join(" · ")}</p>}
+        {!!excluded.length && <p className="mt-1 text-xs text-slate-500">{excluded.length} other markets did not match holdings or execution support.</p>}
+        <details className="mt-2 text-xs"><summary className="cursor-pointer font-semibold text-indigo-700">View all screening details</summary>
+          <div className="mt-2 space-y-1">{receipt.screening.included.map((item, index) => <p key={`in-${item.opportunityId}-${item.scope}-${index}`} className="text-emerald-800">Included · {item.item} · {item.scope} · {item.reason}</p>)}{receipt.screening.excluded.map((item, index) => <p key={`out-${item.opportunityId}-${item.scope}-${index}`} className="text-slate-600">Excluded · {item.item} · {item.scope} · {item.reason}</p>)}</div>
+        </details>
+      </section>
+
+      <section aria-labelledby="receipt-approval-title">
+        <h3 id="receipt-approval-title" className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">5 · Approval</h3>
+        {approval ? <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl border border-slate-100 p-3 text-xs sm:grid-cols-3">
+          <dt className="text-slate-500">Amount</dt><dd className="text-right font-semibold text-slate-900">{approval.amount}</dd>
+          <dt className="text-slate-500">Network</dt><dd className="text-right font-semibold text-slate-900">{approval.network}</dd>
+          <dt className="text-slate-500">Method</dt><dd className="text-right font-mono text-slate-900">{approval.method}</dd>
+          <dt className="text-slate-500">Contract</dt><dd className="text-right font-mono text-slate-900" title={approval.contract}>{shortValue(approval.contract, 5)}</dd>
+          <dt className="text-slate-500">Estimated fee / buffer</dt><dd className="text-right font-semibold text-slate-900">{approval.estimatedFee}</dd>
+          <dt className="text-slate-500">Scope</dt><dd className="col-span-2 text-right text-slate-900 sm:col-span-1">{approval.scope}</dd>
+        </dl> : <p className="text-xs text-slate-500">Approval details have not been shown yet.</p>}
+      </section>
+
+      <section aria-labelledby="receipt-chain-title">
+        <h3 id="receipt-chain-title" className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">6 · On-chain result</h3>
+        <div className="rounded-2xl border border-slate-200 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs text-slate-800">{receipt.execution.network ?? "Nile execution"}</strong><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${receipt.execution.result === "CONFIRMED" ? "bg-emerald-50 text-emerald-700" : receipt.execution.result === "SIMULATED" ? "bg-amber-50 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{receipt.execution.result}</span></div>
+          {txUrl ? <p className="mt-2 font-mono text-xs text-slate-600">TX <a className="text-indigo-700 hover:underline" href={txUrl} target="_blank" rel="noreferrer">{shortValue(receipt.execution.txHash, 8)} ↗</a></p> : <p className="mt-2 text-xs text-slate-500">No on-chain transaction recorded.</p>}
+          <p className="mt-1 text-xs text-slate-500">Block {receipt.execution.blockNumber ?? "Unavailable"} · Actual fee {receipt.execution.actualFee ?? "Unavailable"}</p>
+          {receipt.execution.result === "CONFIRMED" && <div className={`mt-3 flex items-start gap-2 rounded-xl p-3 text-xs ${balanceEvidenceStatus === "VERIFIED" ? "bg-emerald-50 text-emerald-800" : balanceEvidenceStatus === "PENDING" ? "bg-amber-50 text-amber-800" : "bg-rose-50 text-rose-800"}`}>
+            {balanceEvidenceStatus === "VERIFIED" ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />}
+            <div><strong>{statusText(balanceEvidenceStatus)}</strong>
+              {balanceEvidenceStatus === "VERIFIED" ? <p className="mt-1">TRX {humanAmount(receipt.execution.trxBalanceBefore, 4)} → {humanAmount(receipt.execution.trxBalanceAfter, 4)} · Δ {humanAmount(receipt.execution.trxBalanceDelta, 4)}<br />jTRX {humanAmount(receipt.execution.jTrxBalanceBefore, 4)} → {humanAmount(receipt.execution.jTrxBalanceAfter, 4)} · Δ {humanAmount(receipt.execution.jTrxBalanceDelta, 4)}</p> : <p className="mt-1">The transaction is confirmed; token balance deltas are not presented as verified. Inspect raw snapshots in Technical audit details.</p>}
+              {receipt.execution.balanceReality && <p className="mt-1 text-[10px]">Reality: {receipt.execution.balanceReality.replaceAll("_", " ")}</p>}
+            </div>
+          </div>}
+          {receipt.execution.result !== "CONFIRMED" && <p className="mt-2 text-[10px] text-slate-500">Chain confirmation is recorded only from TronGrid.</p>}
         </div>
+      </section>
 
-        <div className="space-y-6">
-          <section>
-            <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Options considered</h3>
-            <div className="space-y-2">
-              {receipt.alternatives.map((option) => (
-                <div key={option.planId} className={`rounded-xl border p-3 ${option.planId === receipt.selection.planId ? "border-indigo-200 bg-indigo-50/50" : "border-slate-100"}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <strong className="text-xs text-slate-900">{option.planId === receipt.selection.planId ? "SELECTED · " : ""}{option.planId}</strong>
-                    <span className="text-[10px] font-semibold text-slate-500">{[option.executionReality.replaceAll("_", " "), option.valuationStatus].filter(Boolean).join(" · ")}</span>
-                  </div>
-                  <div className="mt-2 grid grid-cols-3 gap-2 text-[10px]">
-                    <span>Base<br /><b className="text-xs text-slate-800">{option.valuationStatus === "UNAVAILABLE" ? "UNAVAILABLE" : `${option.valuationStatus === "SIMULATED" ? "SIMULATED " : ""}${option.baseYield} USDT-eq`}</b></span>
-                    <span>Incentive<br /><b className="text-xs text-slate-800">{option.valuationStatus === "UNAVAILABLE" || option.incentiveYield === null ? "Unavailable" : `${option.valuationStatus === "SIMULATED" ? "SIMULATED " : ""}${option.incentiveYield} USDT-eq`}</b></span>
-                    <span>Compass policy cost estimate<br /><b className="text-xs text-slate-800">{option.valuationStatus === "UNAVAILABLE" || option.estimatedCost === null ? "Unavailable" : `${option.valuationStatus === "SIMULATED" ? "SIMULATED " : ""}${option.estimatedCost} USDT-eq`}</b></span>
-                  </div>
-                  <p className="mt-2 text-[10px] text-slate-500">Rules: {option.ruleEvaluation.every((item) => item.passed) ? "PASS" : "STOP · one or more rules failed"}</p>
-                </div>
-              ))}
-              {!receipt.alternatives.length && <p className="text-xs text-slate-500">No alternatives were recorded.</p>}
-            </div>
-          </section>
+      {latestReview && <section className="rounded-xl border border-slate-100 p-3" aria-labelledby="receipt-review-title">
+        <h3 id="receipt-review-title" className="text-xs font-bold uppercase tracking-wide text-slate-500">7 · Latest review</h3>
+        <p className="mt-1 text-xs text-slate-800">{latestReview.mode} · {latestReview.title}</p>
+        <p className="mt-1 text-[10px] text-slate-500">{latestReview.assumptions.length} assumptions · {new Date(latestReview.reviewedAt).toLocaleString()}</p>
+      </section>}
 
-          <section>
-            <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Screening</h3>
-            <div className="space-y-2">
-              {receipt.screening.included.map((item) => (
-                <div key={`in-${item.opportunityId}-${item.scope}`} className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
-                  <strong className="text-xs text-emerald-900">INCLUDED · {item.item} · {item.scope}</strong>
-                  <p className="mt-1 text-[10px] text-emerald-800">{item.reason}</p>
-                </div>
-              ))}
-              {receipt.screening.excluded.map((item, index) => (
-                <div key={`out-${item.opportunityId}-${item.scope}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <strong className="text-xs text-slate-800">EXCLUDED · {item.item} · {item.scope}</strong>
-                  <p className="mt-1 text-[10px] text-slate-600">{item.reason}</p>
-                </div>
-              ))}
-              {!receipt.screening.included.length && !receipt.screening.excluded.length && <p className="text-xs text-slate-500">No screening results were recorded.</p>}
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">What I approved</h3>
-            {receipt.approval.shown ? (
-              <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
-                <dt className="text-slate-500">Amount</dt><dd className="text-right font-semibold text-slate-900">{receipt.approval.shown.amount}</dd>
-                <dt className="text-slate-500">Network</dt><dd className="text-right font-semibold text-slate-900">{receipt.approval.shown.network}</dd>
-                <dt className="text-slate-500">Fee estimate</dt><dd className="text-right font-semibold text-slate-900">{receipt.approval.shown.estimatedFee}</dd>
-                <dt className="text-slate-500">Method</dt><dd className="text-right font-mono text-slate-900">{receipt.approval.shown.method}</dd>
-                <dt className="text-slate-500">Contract</dt><dd className="truncate text-right font-mono text-slate-900" title={receipt.approval.shown.contract}>{receipt.approval.shown.contract}</dd>
-                <dt className="text-slate-500">Signer</dt><dd className="truncate text-right font-mono text-slate-900">{receipt.approval.signer ?? "Unavailable"}</dd>
-              </dl>
-            ) : <p className="mt-2 text-xs text-slate-500">Approval details have not been shown yet.</p>}
-            <div className="mt-3 flex items-center gap-2 border-t border-slate-200 pt-3 text-[10px] text-amber-800">
-              <CircleHelp className="h-4 w-4 shrink-0" /> Wallet popup payload comparison: NOT VERIFIED by the current provider flow.
-            </div>
-            {receipt.approval.shown?.risks?.length ? <p className="mt-2 text-[10px] text-slate-500">Risks: {receipt.approval.shown.risks.join(" · ")}</p> : null}
-            {receipt.approval.shown?.scope && <p className="mt-1 text-[10px] text-slate-500">Scope: {receipt.approval.shown.scope}</p>}
-          </section>
-
-          <section>
-            <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">On-chain result</h3>
-            <div className="rounded-2xl border border-slate-200 p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-700">{receipt.execution.network ?? "Nile execution"}</span>
-                <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${receipt.execution.result === "CONFIRMED" ? "bg-emerald-50 text-emerald-700" : receipt.execution.result === "SIMULATED" ? "bg-amber-50 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{receipt.execution.result}</span>
-              </div>
-              {receipt.execution.txHash ? <p className="mt-2 break-all font-mono text-[10px] text-slate-600">TX {receipt.execution.txHash}</p> : <p className="mt-2 text-[10px] text-slate-500">No on-chain transaction recorded.</p>}
-              {receipt.execution.amountAsset && <p className="mt-1 text-[10px] text-slate-500">Amount: {receipt.execution.amount ?? "Unavailable"} {receipt.execution.amountAsset} · {receipt.execution.amountRaw ?? "Unavailable"} raw units</p>}
-              {receipt.execution.contractResult && <p className="mt-1 text-[10px] text-slate-500">TronGrid receipt: {receipt.execution.contractResult}</p>}
-              <p className="mt-2 text-[10px] text-slate-500">Block: {receipt.execution.blockNumber ?? "Unavailable"} · Actual fee: {receipt.execution.actualFee ?? "Unavailable"}</p>
-              {receipt.execution.trxBalanceBefore !== undefined || receipt.execution.jTrxBalanceBefore !== undefined ? (
-                <div className="mt-1 space-y-1 text-[10px] text-slate-500">
-                  <p>Balance reality: {receipt.execution.balanceReality ?? "NILE_LIVE · partial or unavailable"}</p>
-                  <p>TRX: {receipt.execution.trxBalanceBefore ?? "Unavailable"} → {receipt.execution.trxBalanceAfter ?? "Unavailable"} · Δ {receipt.execution.trxBalanceDelta ?? "Unavailable"} TRX</p>
-                  <p>jTRX: {receipt.execution.jTrxBalanceBefore ?? "Unavailable"} → {receipt.execution.jTrxBalanceAfter ?? "Unavailable"} · Δ {receipt.execution.jTrxBalanceDelta ?? "Unavailable"} jTRX</p>
-                </div>
-              ) : <p className="mt-1 text-[10px] text-slate-500">Balance before / after: {receipt.execution.balanceBefore ?? "Unavailable"} / {receipt.execution.balanceAfter ?? "Unavailable"}</p>}
-              <p className="mt-1 text-[10px] text-slate-500">Chain confirmation is recorded only from TronGrid.</p>
-            </div>
-          </section>
-
-          <section>
-            <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Recorded stops</h3>
-            {receipt.stops.length ? receipt.stops.map((stop) => (
-              <div key={stop.id} className="mb-2 flex gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900">
-                <ShieldAlert className="h-4 w-4 shrink-0" />
-                <div><strong>{stop.ruleId ?? stop.guardId} · STOPPED</strong><p className="mt-1">{stop.reason}</p><p className="mt-1 text-[10px]">{stop.attemptedAction} · {stop.attemptedAmount ?? "amount unavailable"}</p></div>
-              </div>
-            )) : <p className="text-xs text-slate-500">No blocked action recorded.</p>}
-          </section>
-
-          {receipt.parentId && <p className="border-t border-slate-100 pt-3 text-[10px] text-slate-500">Parent receipt: {receipt.parentId} · this proposal remains unexecuted until separately approved.</p>}
-          {latestReview && <p className="text-[10px] text-slate-500">Latest review: {latestReview.title} · {latestReview.mode} · {new Date(latestReview.reviewedAt).toLocaleString()}</p>}
-          {selected?.executionReality === "LIVE_DATA_ONLY" && <p className="text-[10px] text-slate-500">Selected plan includes no currently supported Nile route.</p>}
-        </div>
-      </div>
+      <details className="border-t border-slate-100 pt-3">
+        <summary className="cursor-pointer text-xs font-bold text-indigo-700">Technical audit details</summary>
+        <p className="mt-2 text-[10px] text-slate-500">Exact saved receipt data, including full evidence, excluded markets, raw values, source URLs, transaction snapshots and integrity metadata.</p>
+        <pre className="mt-2 max-h-[32rem] overflow-auto rounded-xl bg-slate-950 p-4 text-[10px] leading-relaxed text-slate-100">{JSON.stringify(receipt, null, 2)}</pre>
+      </details>
     </section>
   );
 }

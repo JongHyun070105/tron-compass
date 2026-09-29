@@ -3,6 +3,7 @@ import { JTRX_ABI, JUSTLEND_NILE_CONTRACTS } from "../integrations/justlend/cont
 import { AllocationLeg, AssetValuation, Holding } from "@/domain/allocation/types";
 import { DecisionEvidenceItem, DecisionStopRecord, makeStopRecord } from "@/domain/decision/receipt";
 import { detectActiveTronNetwork } from "./network";
+import { getWalletTronWeb } from "./tronlink-provider";
 
 const JUSTLEND_VALUATION_SOURCE = "https://openapi.just.network/lend/jtoken";
 
@@ -523,7 +524,7 @@ export async function executeJTrxSupplyOnNile(
   assertAllowedJTrxPreview(preview, "SUPPLY");
   const tronWeb =
     tronWebInstance ||
-    (typeof window !== "undefined" ? (window as any).tronWeb : null);
+    getWalletTronWeb();
 
   if (!tronWeb || !tronWeb.ready) {
     throw new Error("TronWeb instance is not available or wallet is locked.");
@@ -580,7 +581,7 @@ export async function executeJTrxRedeemOnNile(
   assertAllowedJTrxPreview(preview, "REDEEM");
   const tronWeb =
     tronWebInstance ||
-    (typeof window !== "undefined" ? (window as any).tronWeb : null);
+    getWalletTronWeb();
 
   if (!tronWeb || !tronWeb.ready) {
     throw new Error("TronWeb instance is not available or wallet is locked.");

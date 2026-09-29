@@ -79,9 +79,46 @@ export function detectActiveTronNetwork(tronWebInstance?: any): {
 export async function fetchTronWalletBalances(
   address: string,
   tronWebInstance?: any,
-  network: TronNetwork = "nile"
-): Promise<{ trx: string; usdd: string; usdt: string; rawSun?: string }> {
+  network: TronNetwork = "nile",
+  options: { forceFresh?: boolean } = {}
+): Promise<{ trx: string; usdd: string; usdt: string; rawSun?: string; jTrx?: string | null }> {
   if (!address) return { trx: "UNAVAILABLE", usdd: "UNAVAILABLE", usdt: "UNAVAILABLE" };
+
+  // A confirmed transaction must bypass the wallet provider's potentially stale
+  // account view. The app route reads TronGrid with cache: "no-store" and also
+  // returns the jTRX TRC20 balance from the same account response.
+  if (options.forceFresh) {
+    if (typeof window === "undefined") {
+      return { trx: "UNAVAILABLE", usdd: "UNAVAILABLE", usdt: "UNAVAILABLE", jTrx: null };
+    }
+    try {
+      const url = `/api/tron/account?address=${encodeURIComponent(address)}&network=${network}&fresh=${Date.now()}`;
+      const res = await fetch(url, { cache: "no-store", headers: { "Cache-Control": "no-cache" } });
+      const data = await res.json();
+      const exactBalance = typeof data.balanceSun !== "number" || Number.isSafeInteger(data.balanceSun);
+      const rawBalance = String(data.balanceSun);
+      if (!res.ok || !data.success || !exactBalance || !/^\d+$/.test(rawBalance)) {
+        return { trx: "UNAVAILABLE", usdd: "UNAVAILABLE", usdt: "UNAVAILABLE", jTrx: null };
+      }
+      const contract = JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58;
+      const tokenBalances = data.trc20Balances as Record<string, string> | undefined;
+      const tokenRaw = tokenBalances?.[contract] ?? Object.entries(tokenBalances ?? {})
+        .find(([key]) => key.toLowerCase() === contract.toLowerCase())?.[1];
+      const exactTokenBalance = tokenRaw !== undefined && /^\d+$/.test(String(tokenRaw));
+      return {
+        trx: formatUnits(rawBalance, 6),
+        usdd: "UNAVAILABLE",
+        usdt: "UNAVAILABLE",
+        rawSun: rawBalance,
+        jTrx: network === "nile" && exactTokenBalance
+          ? formatUnits(String(tokenRaw), JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.decimals)
+          : null,
+      };
+    } catch (err) {
+      console.warn("Fresh TronGrid wallet query failed:", err);
+      return { trx: "UNAVAILABLE", usdd: "UNAVAILABLE", usdt: "UNAVAILABLE", jTrx: null };
+    }
+  }
 
   const tw =
     tronWebInstance ||
@@ -110,7 +147,8 @@ export async function fetchTronWalletBalances(
   if (!fetchedFromTronWeb && typeof window !== "undefined") {
     try {
       const res = await fetch(
-        `/api/tron/account?address=${encodeURIComponent(address)}&network=${network}`
+        `/api/tron/account?address=${encodeURIComponent(address)}&network=${network}`,
+        { cache: "no-store" }
       );
       if (res.ok) {
         const data = await res.json();

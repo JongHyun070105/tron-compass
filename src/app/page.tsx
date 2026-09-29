@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { WalletHeader, WalletState } from "@/components/wallet/WalletHeader";
 import { JourneyStepper, JourneyStep } from "@/components/navigation/JourneyStepper";
 import { PortfolioHero } from "@/components/portfolio/PortfolioHero";
@@ -35,10 +35,16 @@ import {
 } from "@/domain/decision/receipt";
 import { buildInvestmentRules, evaluateDecisionRules } from "@/domain/allocation/rules";
 import {
-  detectActiveTronNetwork,
-  fetchTronWalletBalances,
-  fetchNileJTrxBalance,
-} from "@/lib/tron/network";
+  detectWalletNetwork,
+  readWalletBalanceSnapshot,
+  WalletBalanceSnapshot,
+} from "@/lib/tron/wallet-state";
+import {
+  getTronLinkProvider,
+  getWalletTronWeb,
+  requestTronLinkAccount,
+  subscribeToTronLinkEvents,
+} from "@/lib/tron/tronlink-provider";
 import { PlanExplanation } from "@/lib/ai/schemas";
 import {
   Sparkles,
@@ -127,6 +133,11 @@ export default function HomePage() {
   // Execution Modal State (Support both Supply & Redeem)
   const [isExecutionModalOpen, setIsExecutionModalOpen] = useState(false);
   const [jTrxBalance, setJTrxBalance] = useState<string | null>("250.00");
+  const [isWalletRefreshing, setIsWalletRefreshing] = useState(false);
+  const walletRefreshSequenceRef = useRef(0);
+  const explicitlyDisconnectedRef = useRef(false);
+  const hasAttemptedWalletRestoreRef = useRef(false);
+  const manuallySelectedDemoRef = useRef(false);
   const [activeReceipt, setActiveReceipt] = useState<DecisionReceipt | null>(null);
   const [savedReceipts, setSavedReceipts] = useState<DecisionReceipt[]>([]);
   const [selectedPlanForExecution, setSelectedPlanForExecution] = useState<AllocationPlan | null>(null);
@@ -300,56 +311,121 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opportunities, usddEvidence]);
 
-  // Handle wallet interactions with REAL on-chain balance fetching
-  const handleConnect = async () => {
-    if (typeof window !== "undefined" && (window as any).tronLink) {
-      try {
-        const res = await (window as any).tronLink.request({ method: "tron_requestAccounts" });
-        if (res.code === 200 || res.code === 4001) {
-          const tw = (window as any).tronWeb;
-          const address = tw?.defaultAddress?.base58;
-          if (address) {
-            const net = detectActiveTronNetwork(tw);
-            const balances = await fetchTronWalletBalances(address, tw, net.id === "nile" ? "nile" : "mainnet");
-            setJTrxBalance(await fetchNileJTrxBalance(address, tw, net.id === "nile" ? "nile" : "mainnet"));
-
-            // Isolate real session: clear demo records
-            await compassStorage.clearDemoExecutions();
-
-            setWalletState({
-              isConnected: true,
-              address,
-              network: net.name,
-              trxBalance: balances.trx,
-              usddBalance: balances.usdd,
-              isDemoMode: false,
-            });
-            return;
-          }
-        }
-      } catch (err) {
-        console.warn("TronLink connection error:", err);
-      }
-    }
-
-    alert("TronLink 지갑 확장이 감지되지 않았거나 잠겨 있습니다. 확장 프로그램을 확인해 주세요.");
-  };
-
-  const handleDisconnect = () => {
+  const clearRealWalletState = useCallback((network = "") => {
+    walletRefreshSequenceRef.current += 1;
+    setIsWalletRefreshing(false);
     setJTrxBalance(null);
+    setIsExecutionModalOpen(false);
+    setSelectedPlanForExecution(null);
+    setSelectedLegForExecution(null);
     setWalletState({
       isConnected: false,
       address: "",
-      network: "",
+      network,
       trxBalance: "UNAVAILABLE",
       usddBalance: "UNAVAILABLE",
       isDemoMode: false,
     });
+  }, []);
+
+  const refreshWalletState = useCallback(async (
+    options: { address?: string; chainId?: string; forceFresh?: boolean; clearStale?: boolean } = {}
+  ): Promise<WalletBalanceSnapshot | null> => {
+    if (typeof window === "undefined") return null;
+    const provider = getTronLinkProvider();
+    const tronWeb = getWalletTronWeb(provider);
+    const address = options.address ?? tronWeb?.defaultAddress?.base58 ?? "";
+    if (!address) {
+      clearRealWalletState();
+      return null;
+    }
+
+    const network = detectWalletNetwork(tronWeb, options.chainId);
+    const refreshSequence = ++walletRefreshSequenceRef.current;
+    setIsWalletRefreshing(true);
+    if (options.clearStale !== false) {
+      setWalletState({
+        isConnected: true,
+        address,
+        network: network.name,
+        trxBalance: "UNAVAILABLE",
+        usddBalance: "UNAVAILABLE",
+        isDemoMode: false,
+      });
+      setJTrxBalance(null);
+    }
+
+    try {
+      const snapshot = await readWalletBalanceSnapshot(
+        address,
+        tronWeb,
+        network.id,
+        network.name,
+        { forceFresh: options.forceFresh !== false }
+      );
+      if (refreshSequence !== walletRefreshSequenceRef.current) return null;
+      setWalletState({
+        isConnected: true,
+        address: snapshot.address,
+        network: snapshot.network,
+        trxBalance: snapshot.trxBalance ?? "UNAVAILABLE",
+        usddBalance: "UNAVAILABLE",
+        isDemoMode: false,
+      });
+      setJTrxBalance(snapshot.jTrxBalance);
+      return snapshot;
+    } catch (err) {
+      if (refreshSequence === walletRefreshSequenceRef.current) {
+        console.warn("Wallet refresh failed:", err);
+        setWalletState((previous) => ({
+          ...previous,
+          isConnected: true,
+          address,
+          network: network.name,
+          trxBalance: "UNAVAILABLE",
+          usddBalance: "UNAVAILABLE",
+          isDemoMode: false,
+        }));
+        setJTrxBalance(null);
+      }
+      return {
+        address,
+        networkId: network.id,
+        network: network.name,
+        trxBalance: null,
+        jTrxBalance: null,
+        exchangeRateRaw: null,
+        fetchedAt: new Date().toISOString(),
+      };
+    } finally {
+      if (refreshSequence === walletRefreshSequenceRef.current) setIsWalletRefreshing(false);
+    }
+  }, [clearRealWalletState]);
+
+  const handleConnect = async () => {
+    explicitlyDisconnectedRef.current = false;
+    manuallySelectedDemoRef.current = false;
+    setIsWalletRefreshing(true);
+    try {
+      const address = await requestTronLinkAccount();
+      if (!address) throw new Error("TronLink did not return an authorized account.");
+      await compassStorage.clearDemoExecutions();
+      await refreshWalletState({ address, clearStale: true, forceFresh: true });
+    } catch (err) {
+      console.warn("TronLink connection error:", err);
+      setIsWalletRefreshing(false);
+      alert("TronLink 연결이 승인되지 않았거나 지갑을 사용할 수 없습니다. 확장 프로그램과 선택 네트워크를 확인해 주세요.");
+    }
+  };
+
+  const handleDisconnect = () => {
+    explicitlyDisconnectedRef.current = true;
+    clearRealWalletState();
   };
 
   const handleToggleDemoMode = async () => {
     if (!walletState.isDemoMode) {
-      // Switch TO Demo mode
+      manuallySelectedDemoRef.current = true;
       setJTrxBalance("250.00");
       setWalletState({
         isConnected: true,
@@ -359,67 +435,78 @@ export default function HomePage() {
         usddBalance: "1,000.00",
         isDemoMode: true,
       });
-    } else {
-      // Switch TO Real Wallet mode
-      const tw = typeof window !== "undefined" ? (window as any).tronWeb : null;
-      const address = tw?.defaultAddress?.base58;
-
-      if (tw && address) {
-        const net = detectActiveTronNetwork(tw);
-        const balances = await fetchTronWalletBalances(address, tw, net.id === "nile" ? "nile" : "mainnet");
-        setJTrxBalance(await fetchNileJTrxBalance(address, tw, net.id === "nile" ? "nile" : "mainnet"));
-
-        await compassStorage.clearDemoExecutions();
-
-        setWalletState({
-          isConnected: true,
-          address,
-          network: net.name,
-          trxBalance: balances.trx,
-          usddBalance: balances.usdd,
-          isDemoMode: false,
-        });
-      } else {
-        setJTrxBalance(null);
-        setWalletState({
-          isConnected: false,
-          address: "",
-          network: "Nile Testnet",
-          trxBalance: "UNAVAILABLE",
-          usddBalance: "UNAVAILABLE",
-          isDemoMode: false,
-        });
-      }
+      setIsWalletRefreshing(false);
+      return;
     }
+    manuallySelectedDemoRef.current = false;
+    clearRealWalletState("연결 대기");
+    await handleConnect();
   };
 
-  // Listen to TronLink account or network switch events
   useEffect(() => {
-    const handleTronMessage = async (e: MessageEvent) => {
-      if (
-        e.data?.message?.action === "setAccount" ||
-        e.data?.message?.action === "setNode"
-      ) {
-        const tw = (window as any).tronWeb;
-        const address = tw?.defaultAddress?.base58;
-        if (address && !walletState.isDemoMode) {
-          const net = detectActiveTronNetwork(tw);
-          const balances = await fetchTronWalletBalances(address, tw, net.id === "nile" ? "nile" : "mainnet");
-          setJTrxBalance(await fetchNileJTrxBalance(address, tw, net.id === "nile" ? "nile" : "mainnet"));
-          setWalletState((prev) => ({
-            ...prev,
-            address,
-            network: net.name,
-            trxBalance: balances.trx,
-            usddBalance: balances.usdd,
-          }));
-        }
+    const provider = getTronLinkProvider();
+    const restoreConnectedWallet = () => {
+      if (explicitlyDisconnectedRef.current) return;
+      const tronWeb = getWalletTronWeb(provider);
+      const address = tronWeb?.defaultAddress?.base58;
+      if (address) {
+        explicitlyDisconnectedRef.current = false;
+        void refreshWalletState({ address, clearStale: true, forceFresh: true });
       }
     };
-
-    window.addEventListener("message", handleTronMessage);
-    return () => window.removeEventListener("message", handleTronMessage);
-  }, [walletState.isDemoMode]);
+    const unsubscribe = subscribeToTronLinkEvents(provider, {
+      onAccountsChanged: (accounts) => {
+        if (!accounts.length) {
+          if (walletState.isDemoMode) return;
+          explicitlyDisconnectedRef.current = true;
+          clearRealWalletState();
+          return;
+        }
+        explicitlyDisconnectedRef.current = false;
+        manuallySelectedDemoRef.current = false;
+        void refreshWalletState({ address: accounts[0], clearStale: true, forceFresh: true });
+      },
+      onChainChanged: ({ chainId }) => {
+        if (!explicitlyDisconnectedRef.current && !(walletState.isDemoMode && manuallySelectedDemoRef.current)) {
+          void refreshWalletState({ chainId, clearStale: true, forceFresh: true });
+        }
+      },
+      onConnect: ({ chainId } = {}) => {
+        if (!explicitlyDisconnectedRef.current && !(walletState.isDemoMode && manuallySelectedDemoRef.current)) {
+          void refreshWalletState({ chainId, clearStale: true, forceFresh: true });
+        }
+      },
+      onDisconnect: () => {
+        if (walletState.isDemoMode) return;
+        explicitlyDisconnectedRef.current = true;
+        clearRealWalletState();
+      },
+    });
+    const handleWindowFocus = () => {
+      if (explicitlyDisconnectedRef.current || manuallySelectedDemoRef.current) return;
+      if (walletState.isDemoMode) {
+        const tronWeb = getWalletTronWeb(getTronLinkProvider());
+        const address = tronWeb?.defaultAddress?.base58;
+        if (address) void refreshWalletState({ address, clearStale: true, forceFresh: true });
+      } else {
+        void refreshWalletState({ clearStale: false, forceFresh: true });
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") handleWindowFocus();
+    };
+    if (!hasAttemptedWalletRestoreRef.current) {
+      hasAttemptedWalletRestoreRef.current = true;
+      restoreConnectedWallet();
+    }
+    window.addEventListener("focus", handleWindowFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("focus", handleWindowFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [walletState.isDemoMode, clearRealWalletState, refreshWalletState]);
 
   const saveReceipt = async (receipt: DecisionReceipt) => {
     const updated = await refreshDecisionReceiptIntegrity(receipt);
@@ -598,6 +685,7 @@ export default function HomePage() {
       <WalletHeader
         walletState={walletState}
         jTrxBalance={jTrxBalance}
+        isRefreshing={isWalletRefreshing}
         onConnect={handleConnect}
         onDisconnect={handleDisconnect}
         onToggleDemoMode={handleToggleDemoMode}
@@ -756,6 +844,7 @@ export default function HomePage() {
         isDemoMode={walletState.isDemoMode}
         trxBalance={walletState.trxBalance}
         jTrxBalance={jTrxBalance ?? "0"}
+        isWalletRefreshing={isWalletRefreshing}
         networkName={walletState.network}
         initialMode={executionMode}
         profile={confirmedProfile ?? profile}
@@ -763,6 +852,7 @@ export default function HomePage() {
         usddEvidence={usddEvidence}
         decisionReceipt={activeReceipt}
         onDecisionReceiptUpdate={saveReceipt}
+        refreshWalletState={refreshWalletState}
         onExecutionCompleted={(hash) => {
           console.log("Transaction executed on Nile:", hash);
           setCurrentStep(5); // Move to post-execution monitoring

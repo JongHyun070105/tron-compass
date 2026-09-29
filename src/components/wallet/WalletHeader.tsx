@@ -22,6 +22,7 @@ export interface WalletState {
 interface WalletHeaderProps {
   walletState: WalletState;
   jTrxBalance: string | null;
+  isRefreshing?: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
   onToggleDemoMode: () => void;
@@ -30,6 +31,7 @@ interface WalletHeaderProps {
 export function WalletHeader({
   walletState,
   jTrxBalance,
+  isRefreshing = false,
   onConnect,
   onDisconnect,
   onToggleDemoMode,
@@ -103,16 +105,18 @@ export function WalletHeader({
           {walletState.isConnected ? (
             <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl p-1 pl-3 shadow-2xs">
               <div className="flex items-center gap-2 text-xs">
-                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span className={`w-2 h-2 rounded-full ${isRefreshing && !walletState.isDemoMode ? "bg-amber-500 animate-pulse" : "bg-emerald-500"}`}></span>
                 <span className="text-slate-700 font-mono font-medium">
                   {walletState.address.slice(0, 5)}...{walletState.address.slice(-4)}
                 </span>
                 <span className="text-slate-900 font-bold font-mono pl-1 border-l border-slate-200">
-                  {walletState.isDemoMode
+                  {isRefreshing && !walletState.isDemoMode
+                    ? "Refreshing wallet…"
+                    : walletState.isDemoMode
                     ? `SIMULATED · ${walletState.trxBalance} TRX`
                     : walletState.trxBalance === "UNAVAILABLE" ? "TRX balance unavailable" : `${walletState.trxBalance} TRX`}
                 </span>
-                {walletState.network.toLowerCase().includes("nile") && (
+                {!isRefreshing && walletState.network.toLowerCase().includes("nile") && (
                   <span className="text-purple-700 font-bold font-mono pl-1 border-l border-slate-200">
                     {walletState.isDemoMode
                       ? `SIMULATED · ${jTrxBalance ?? "250.00"} jTRX`

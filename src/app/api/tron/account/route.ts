@@ -34,18 +34,28 @@ export async function GET(request: NextRequest) {
       trongridClient.getAccountResources(cleanAddress, cleanNetwork as TronNetwork),
     ]);
 
-    return NextResponse.json({
-      success: true,
-      address: cleanAddress,
-      network: cleanNetwork,
-      balanceSun: account?.balanceSun || 0,
-      balanceTrx: account?.balanceTrx || "0.000000",
-      accountName: account?.accountName || null,
-      isWitness: !!account?.isWitness,
-      resources,
-      trc20Balances: account?.trc20Balances || {},
-      timestamp: new Date().toISOString(),
-    });
+    if (!account) {
+      return NextResponse.json(
+        { success: false, error: "TronGrid did not return an account snapshot" },
+        { status: 404, headers: { "Cache-Control": "no-store, max-age=0" } }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        address: cleanAddress,
+        network: cleanNetwork,
+        balanceSun: account?.balanceSun || 0,
+        balanceTrx: account?.balanceTrx || "0.000000",
+        accountName: account?.accountName || null,
+        isWitness: !!account?.isWitness,
+        resources,
+        trc20Balances: account?.trc20Balances || {},
+        timestamp: new Date().toISOString(),
+      },
+      { headers: { "Cache-Control": "no-store, max-age=0" } }
+    );
   } catch (err: any) {
     return NextResponse.json(
       {

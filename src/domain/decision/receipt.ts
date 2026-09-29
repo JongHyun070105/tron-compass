@@ -123,6 +123,8 @@ export interface DecisionReceipt extends DecisionReceiptDraft {
     trxBalanceDelta?: string | null;
     jTrxBalanceDelta?: string | null;
     balanceReality?: "NILE_LIVE" | null;
+    balanceAction?: "SUPPLY" | "REDEEM" | null;
+    balanceEvidenceStatus?: "PENDING" | "VERIFIED" | "STALE" | "UNAVAILABLE";
   };
   stops: DecisionStopRecord[];
   integrity: { engineVersion: string; decisionHash: string };
@@ -197,6 +199,8 @@ export async function createDecisionReceipt(draft: DecisionReceiptDraft): Promis
       trxBalanceDelta: null,
       jTrxBalanceDelta: null,
       balanceReality: null,
+      balanceAction: null,
+      balanceEvidenceStatus: undefined,
     },
     stops: [],
     integrity: { engineVersion: "decision-engine/1.0.0", decisionHash: "" },
