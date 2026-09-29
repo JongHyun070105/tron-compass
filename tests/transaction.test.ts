@@ -418,6 +418,51 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
     }
   });
 
+  it("rechecks a single FAILED observation before finalizing the transaction", async () => {
+    const responses = [
+      { success: true, status: "FAILED", blockNumber: 71382254, contractResult: "REVERT" },
+      { success: true, status: "CONFIRMED", blockNumber: 71382254, contractResult: "SUCCESS" },
+    ];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify(responses.shift()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    try {
+      const result = await transaction.pollTransactionStatus("a".repeat(64), 2, 0, "nile");
+
+      expect(result.status).toBe("CONFIRMED");
+      expect(result.contractResult).toBe("SUCCESS");
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("finalizes a reverted transaction after the same failure is observed twice", async () => {
+    const failure = { success: true, status: "FAILED", blockNumber: 71382254, contractResult: "REVERT" };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify(failure), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    try {
+      const result = await transaction.pollTransactionStatus("b".repeat(64), 2, 0, "nile");
+
+      expect(result).toMatchObject({
+        txHash: "b".repeat(64),
+        status: "FAILED",
+        blockNumber: 71382254,
+        contractResult: "REVERT",
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("computes observed TRX and jTRX deltas at their respective decimal precision", () => {
     expect(computeBalanceDelta("10.123456", "12", 6)).toBe("1.876544");
     expect(computeBalanceDelta("125", "124.125", 8)).toBe("-0.87500000");

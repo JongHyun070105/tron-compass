@@ -642,6 +642,19 @@ export async function pollTransactionStatus(
   delayMs: number = 2500,
   network: "nile" | "mainnet" = "nile"
 ): Promise<TransactionStatusResult> {
+  let previousFailure: { blockNumber?: number; contractResult?: string } | null = null;
+  const toStatusResult = (data: any, status: "CONFIRMED" | "FAILED"): TransactionStatusResult => ({
+    txHash,
+    status,
+    blockNumber: data.blockNumber,
+    feeSun: Number.isSafeInteger(data.feeSun) && data.feeSun >= 0 ? data.feeSun : undefined,
+    energyUsed: Number.isSafeInteger(data.energyUsageTotal) && data.energyUsageTotal >= 0 ? data.energyUsageTotal : undefined,
+    netUsed: Number.isSafeInteger(data.netUsage) && data.netUsage >= 0 ? data.netUsage : undefined,
+    energyFeeSun: Number.isSafeInteger(data.energyFeeSun) && data.energyFeeSun >= 0 ? data.energyFeeSun : undefined,
+    contractResult: data.contractResult,
+    timestamp: data.blockTimestamp,
+  });
+
   for (let i = 0; i < maxAttempts; i++) {
     try {
       const res = await fetch("/api/tron/verify-tx", {
@@ -653,24 +666,36 @@ export async function pollTransactionStatus(
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
-          if (data.status === "CONFIRMED" || data.status === "FAILED") {
-            return {
-              txHash,
-              status: data.status,
-              blockNumber: data.blockNumber,
-              feeSun: Number.isSafeInteger(data.feeSun) && data.feeSun >= 0 ? data.feeSun : undefined,
-              energyUsed: Number.isSafeInteger(data.energyUsageTotal) && data.energyUsageTotal >= 0 ? data.energyUsageTotal : undefined,
-              netUsed: Number.isSafeInteger(data.netUsage) && data.netUsage >= 0 ? data.netUsage : undefined,
-              energyFeeSun: Number.isSafeInteger(data.energyFeeSun) && data.energyFeeSun >= 0 ? data.energyFeeSun : undefined,
-              contractResult: data.contractResult,
-              timestamp: data.blockTimestamp,
-            };
+          if (data.status === "CONFIRMED") {
+            return toStatusResult(data, "CONFIRMED");
           }
-          // Status is PENDING or NOT_FOUND, continue polling until included in block
+          if (data.status === "FAILED") {
+            const failure = {
+              blockNumber: data.blockNumber,
+              contractResult: data.contractResult,
+            };
+            const sameFailure = previousFailure !== null &&
+              previousFailure.blockNumber === failure.blockNumber &&
+              previousFailure.contractResult === failure.contractResult;
+
+            if (sameFailure) {
+              return toStatusResult(data, "FAILED");
+            }
+
+            previousFailure = failure;
+          } else {
+            // PENDING / NOT_FOUND breaks the consecutive-failure requirement.
+            previousFailure = null;
+          }
+        } else {
+          previousFailure = null;
         }
+      } else {
+        previousFailure = null;
       }
     } catch {
       // Continue polling until maxAttempts
+      previousFailure = null;
     }
 
     if (i < maxAttempts - 1) {
