@@ -5,6 +5,7 @@ import {
   toUsdString,
   toPercentString,
   parseUnits,
+  parseUnitsExact,
   formatUnits,
   SafeMath,
 } from "../src/lib/math/decimal";
@@ -30,6 +31,14 @@ describe("Decimal Math & Safety", () => {
 
     const formatted = formatUnits("1500000", 6);
     expect(formatted).toBe("1.5");
+  });
+
+  it("converts execution amounts only when positive and within exact token precision", () => {
+    expect(parseUnitsExact("001.23456789", 8)).toBe("123456789");
+    expect(parseUnitsExact("1.000000001", 8)).toBeNull();
+    expect(parseUnitsExact("0", 8)).toBeNull();
+    expect(parseUnitsExact("-1", 8)).toBeNull();
+    expect(parseUnitsExact("1e2", 8)).toBeNull();
   });
 
   it("formats token units for 18 decimals (USDD / TRC20)", () => {

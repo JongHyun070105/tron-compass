@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   buildPreflightChecks,
   buildRedeemPreflightChecks,
@@ -189,6 +189,18 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
     expect(unavailable).toBeNull();
   });
 
+  it("rejects malformed or unsafe numeric jTRX balance responses", async () => {
+    const malformed = await fetchNileJTrxBalance("TUser", {
+      contract: async () => ({ balanceOf: () => ({ call: async () => "12oops" }) }),
+    }, "nile");
+    const unsafeNumber = await fetchNileJTrxBalance("TUser", {
+      contract: async () => ({ balanceOf: () => ({ call: async () => Number.MAX_SAFE_INTEGER + 1 }) }),
+    }, "nile");
+
+    expect(malformed).toBeNull();
+    expect(unsafeNumber).toBeNull();
+  });
+
   it("reads the exchange rate only from the canonical Nile jTRX contract", async () => {
     let called = false;
     const nileRate = await fetchNileJTrxExchangeRate({
@@ -205,10 +217,98 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
     expect(called).toBe(false);
   });
 
+  it("rejects unsafe numeric Nile exchange-rate responses", async () => {
+    const rate = await fetchNileJTrxExchangeRate({
+      contract: async () => ({ exchangeRateStored: () => ({ call: async () => Number.MAX_SAFE_INTEGER + 1 }) }),
+    }, "nile");
+    expect(rate).toBeNull();
+  });
+
   it("uses Nile exchangeRateStored for an approximate jTRX redemption quote", () => {
     expect(estimateNileJTrxRedeemTrx("100", "200000000000000")).toBe("2");
     expect(estimateNileJTrxRedeemTrx("0", "200000000000000")).toBeNull();
     expect(estimateNileJTrxRedeemTrx("1", "0")).toBeNull();
+    expect(estimateNileJTrxRedeemTrx("1.000000001", "200000000000000")).toBeNull();
+  });
+
+  it("checks the provider network before any Nile jTRX wallet call", async () => {
+    const mainnetProvider = {
+      ready: true,
+      fullNode: { host: "https://api.trongrid.io" },
+      contract: async () => { throw new Error("Mainnet contract must not be reached"); },
+    };
+    const redeemPreview = prepareJTrxRedeemPreview("1", "TUser");
+    const supplyPreview = prepareJTrxSupplyPreview("1", "TUser");
+
+    await expect(transaction.executeJTrxRedeemOnNile(redeemPreview, mainnetProvider)).rejects.toThrow("not connected to Nile");
+    await expect(transaction.executeJTrxSupplyOnNile(supplyPreview, mainnetProvider)).rejects.toThrow("not connected to Nile");
+  });
+
+  it("calls only the canonical Nile redeem(uint256) method with exact 8-decimal raw units", async () => {
+    const send = vi.fn().mockResolvedValue({ txid: "mock-nile-tx" });
+    const provider = {
+      ready: true,
+      fullNode: { host: "https://nile.trongrid.io" },
+      contract: vi.fn(async (abi: unknown, address: string) => {
+        expect(Array.isArray(abi)).toBe(true);
+        expect(address).toBe(JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58);
+        return { redeem: (rawAmount: string) => {
+          expect(rawAmount).toBe("123456789");
+          return { send };
+        } };
+      }),
+    };
+
+    const result = await transaction.executeJTrxRedeemOnNile(
+      prepareJTrxRedeemPreview("1.23456789", "TUser"),
+      provider,
+    );
+
+    expect(result).toMatchObject({ txHash: "mock-nile-tx", status: "BROADCASTED" });
+    expect(provider.contract).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({ feeLimit: 100_000_000 });
+  });
+
+  it("rechecks Nile immediately before sending if the wallet network changes", async () => {
+    const send = vi.fn();
+    const provider: any = {
+      ready: true,
+      fullNode: { host: "https://nile.trongrid.io" },
+      contract: async () => {
+        provider.fullNode.host = "https://api.trongrid.io";
+        return { redeem: () => ({ send }) };
+      },
+    };
+
+    await expect(transaction.executeJTrxRedeemOnNile(
+      prepareJTrxRedeemPreview("1", "TUser"), provider,
+    )).rejects.toThrow("not connected to Nile");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("preserves only TronGrid-reported fee and resource usage fields", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      success: true,
+      status: "CONFIRMED",
+      blockNumber: 71234567,
+      feeSun: 12345,
+      energyUsageTotal: 67890,
+      netUsage: 123,
+      energyFeeSun: 11111,
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    try {
+      const result = await transaction.pollTransactionStatus("a".repeat(64), 1, 0, "nile");
+      expect(result).toMatchObject({
+        status: "CONFIRMED",
+        blockNumber: 71234567,
+        feeSun: 12345,
+        energyUsed: 67890,
+        netUsed: 123,
+        energyFeeSun: 11111,
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("computes observed TRX and jTRX deltas at their respective decimal precision", () => {
@@ -420,6 +520,50 @@ describe("TRON Execution Layer — Preflight & Preview", () => {
     expect(result.ready).toBe(false);
     const feeCheck = result.checks.find((c) => c.key === "ENERGY_FEE_BUFFER");
     expect(feeCheck?.passed).toBe(false);
+  });
+
+  it("rejects zero, negative, malformed and over-precision redeem amounts", () => {
+    for (const amount of ["0", "-1", "not-a-number", "1e2", "0.000000001"]) {
+      const result = buildRedeemPreflightChecks({
+        isWalletConnected: true,
+        walletAddress: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+        currentNetwork: "nile",
+        trxBalanceForFee: "20",
+        jTrxBalance: "100",
+        requiredJTrxAmount: amount,
+      });
+      expect(result.ready, amount).toBe(false);
+      expect(result.checks.find((check) => check.key === "AMOUNT_VALID")?.passed, amount).toBe(false);
+    }
+  });
+
+  it("allows redeeming the exact jTRX balance but blocks requests above it", () => {
+    const base = {
+      isWalletConnected: true,
+      walletAddress: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+      currentNetwork: "nile",
+      trxBalanceForFee: "20",
+      jTrxBalance: "1.00000001",
+    };
+    const exactBalance = buildRedeemPreflightChecks({ ...base, requiredJTrxAmount: "1.00000001" });
+    const aboveBalance = buildRedeemPreflightChecks({ ...base, requiredJTrxAmount: "1.00000002" });
+
+    expect(exactBalance.ready).toBe(true);
+    expect(aboveBalance.ready).toBe(false);
+    expect(aboveBalance.checks.find((check) => check.key === "BALANCE_SUFFICIENT")?.passed).toBe(false);
+  });
+
+  it("rejects supply requests that cannot be represented exactly with six decimals", () => {
+    const result = buildPreflightChecks({
+      isWalletConnected: true,
+      walletAddress: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+      currentNetwork: "nile",
+      trxBalance: "150",
+      requiredAmount: "1.0000001",
+      asset: "TRX",
+    });
+    expect(result.ready).toBe(false);
+    expect(result.checks.find((check) => check.key === "AMOUNT_VALID")?.passed).toBe(false);
   });
 
   it("generates correct execution preview for jTRX redeem calling verified Nile redeem()", () => {

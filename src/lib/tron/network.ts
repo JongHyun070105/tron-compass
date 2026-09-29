@@ -1,4 +1,4 @@
-import { Decimal, formatUnits, parseUnits } from "@/lib/math/decimal";
+import { Decimal, formatUnits, parseUnitsExact } from "@/lib/math/decimal";
 import { JTRX_ABI, JUSTLEND_NILE_CONTRACTS } from "@/lib/integrations/justlend/contracts";
 
 export type TronNetwork = "mainnet" | "nile";
@@ -147,7 +147,10 @@ export async function fetchNileJTrxBalance(
   try {
     const contract = await tw.contract(JTRX_ABI, JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58);
     const rawBalance = await contract.balanceOf(address).call();
-    return formatUnits(String(rawBalance), JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.decimals);
+    const rawText = String(rawBalance);
+    const exactNumber = typeof rawBalance !== "number" || Number.isSafeInteger(rawBalance);
+    if (!exactNumber || !/^\d+$/.test(rawText)) return null;
+    return formatUnits(rawText, JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.decimals);
   } catch (err) {
     console.warn("Nile jTRX balance query failed:", err);
     return null;
@@ -164,8 +167,10 @@ export async function fetchNileJTrxExchangeRate(
   if (!tw) return null;
   try {
     const contract = await tw.contract(JTRX_ABI, JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58);
-    const raw = String(await contract.exchangeRateStored().call());
-    if (!/^\d+$/.test(raw) || raw === "0") return null;
+    const rawValue = await contract.exchangeRateStored().call();
+    const raw = String(rawValue);
+    const exactNumber = typeof rawValue !== "number" || Number.isSafeInteger(rawValue);
+    if (!exactNumber || !/^\d+$/.test(raw) || raw === "0") return null;
     return { raw, fetchedAt: new Date().toISOString() };
   } catch (err) {
     console.warn("Nile jTRX exchange rate query failed:", err);
@@ -178,9 +183,10 @@ export async function fetchNileJTrxExchangeRate(
  * raw underlying units; flooring to sun avoids promising an unrepresentable fraction.
  */
 export function estimateNileJTrxRedeemTrx(amountJTrx: string, exchangeRateRaw: string): string | null {
-  if (!/^\d+(?:\.\d+)?$/.test(amountJTrx) || !/^\d+$/.test(exchangeRateRaw)) return null;
+  const exactAmountRaw = parseUnitsExact(amountJTrx, JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.decimals);
+  if (exactAmountRaw === null || !/^\d+$/.test(exchangeRateRaw)) return null;
   try {
-    const amountRaw = new Decimal(parseUnits(amountJTrx, JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.decimals));
+    const amountRaw = new Decimal(exactAmountRaw);
     const rate = new Decimal(exchangeRateRaw);
     if (!amountRaw.isFinite() || !amountRaw.gt(0) || !rate.isFinite() || !rate.gt(0)) return null;
     const underlyingRaw = amountRaw.times(rate).div(new Decimal(10).pow(18)).floor();

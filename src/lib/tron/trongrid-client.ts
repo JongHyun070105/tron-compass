@@ -412,19 +412,25 @@ export class TronGridClient {
     const parsedInfo = TronTransactionInfoResponseSchema.safeParse(rawInfo);
     const info = parsedInfo.success ? parsedInfo.data : null;
 
-    if (info && info.id && info.blockNumber) {
+    if (
+      info?.id?.toLowerCase() === txHash.toLowerCase() &&
+      Number.isSafeInteger(info.blockNumber) &&
+      (info.blockNumber ?? 0) > 0
+    ) {
       const receipt = info.receipt;
       const receiptResult = receipt?.result;
       const topResult = info.result;
 
-      // Fail condition: explicit revert or failure
-      const isExplicitFail =
-        topResult === "FAILED" ||
-        (receiptResult && receiptResult !== "SUCCESS");
-
-      const status: "CONFIRMED" | "FAILED" = isExplicitFail
+      // A block number alone does not prove successful execution. Require an
+      // explicit SUCCESS result; keep incomplete receipt evidence pending.
+      const isExplicitFail = topResult === "FAILED" ||
+        (receiptResult !== undefined && receiptResult !== "SUCCESS");
+      const hasExplicitSuccess = topResult === "SUCCESS" || receiptResult === "SUCCESS";
+      const status: "CONFIRMED" | "FAILED" | "PENDING" = isExplicitFail
         ? "FAILED"
-        : "CONFIRMED";
+        : hasExplicitSuccess
+          ? "CONFIRMED"
+          : "PENDING";
 
       return {
         txHash,
@@ -432,7 +438,7 @@ export class TronGridClient {
         status,
         blockNumber: info.blockNumber,
         blockTimestamp: info.blockTimeStamp,
-        contractResult: receiptResult || topResult || "SUCCESS",
+        contractResult: receiptResult || topResult || "PENDING",
         feeSun: info.fee,
         netFeeSun: receipt?.net_fee,
         energyFeeSun: receipt?.energy_fee,

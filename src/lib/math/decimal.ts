@@ -55,6 +55,20 @@ export function parseUnits(amountStr: string, decimals: number): string {
   return d.times(factor).floor().toFixed(0);
 }
 
+/** Converts a positive decimal amount only when it fits the token precision exactly. */
+export function parseUnitsExact(amountStr: string, decimals: number): string | null {
+  if (
+    !Number.isInteger(decimals) ||
+    decimals < 0 ||
+    decimals > 30 ||
+    !/^\d+(?:\.\d+)?$/.test(amountStr)
+  ) return null;
+  const [whole, fraction = ""] = amountStr.split(".");
+  if (fraction.length > decimals) return null;
+  const raw = `${whole}${fraction.padEnd(decimals, "0")}`.replace(/^0+/, "") || "0";
+  return raw === "0" ? null : raw;
+}
+
 /**
  * Converts raw on-chain base units to human readable token amount string.
  * Example: "1500000" sun (6 decimals) -> "1.5"

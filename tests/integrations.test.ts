@@ -1,9 +1,21 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { normalizeJustLendToken, normalizeJustLendMarketList } from "../src/lib/integrations/justlend/normalize";
 import { RawJustLendToken } from "../src/lib/integrations/justlend/schemas";
 import { JUSTLEND_FALLBACK_FIXTURE } from "../src/lib/integrations/justlend/fixture";
 import { fetchJustLendMarkets } from "../src/lib/integrations/justlend/client";
 import { fetchUsddEvidence } from "../src/lib/integrations/usdd/client";
+import {
+  JUSTLEND_MARKETS_RESPONSE,
+  JUSTLEND_MINING_RESPONSE,
+  LIVE_FIXTURE_CAPTURED_AT,
+  USDD_COLLATERAL_RESPONSE,
+  USDD_OVERVIEW_RESPONSE,
+} from "./fixtures/live-integrations";
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("JustLend Integration & Normalization", () => {
   it("normalizes a raw jTRX market and marks it as executable on Nile", () => {
@@ -97,25 +109,69 @@ describe("JustLend Integration & Normalization", () => {
     expect(noActiveMining?.totalApy).toBe(noActiveMining?.baseApy);
   });
 
-  it("fetches market data and returns valid YieldOpportunity array", async () => {
-    const res = await fetchJustLendMarkets();
+  it("normalizes captured JustLend responses with deterministic live evidence", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(LIVE_FIXTURE_CAPTURED_AT));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      const body = url.includes("/mining/apy")
+        ? JUSTLEND_MINING_RESPONSE
+        : JUSTLEND_MARKETS_RESPONSE;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const res = await fetchJustLendMarkets({ forceRefresh: true });
     expect(res.markets.length).toBeGreaterThan(0);
-    expect(res.source).toMatch(/live|cache|fallback/);
+    expect(res.source).toBe("live");
+    expect(res.fetchedAt).toBe(LIVE_FIXTURE_CAPTURED_AT);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://openapi.just.network/lend/jtoken",
+      "https://openapi.just.network/mining/apy",
+    ]);
+    const trx = res.markets.find((market) => market.asset === "TRX");
+    expect(trx?.underlyingPriceInTrx).toBe("1.000000000000000000000000000");
+    expect(trx?.baseApy).toBe("0.003156");
     for (const market of res.markets.filter((item) => item.incentiveApy !== null)) {
       expect(market.incentiveReality).toBe("LIVE_MAINNET");
-      expect(market.incentiveFetchedAt).toBeTruthy();
+      expect(market.incentiveFetchedAt).toBe(LIVE_FIXTURE_CAPTURED_AT);
       expect(market.incentiveSourceUrl).toBe("https://openapi.just.network/mining/apy");
       expect(Number(market.totalApy)).toBeCloseTo(Number(market.baseApy) + Number(market.incentiveApy), 6);
     }
+    const usdd = res.markets.find((market) => market.asset === "USDD");
+    expect(usdd?.baseApy).toBe("0.000009");
+    expect(usdd?.incentiveApy).toBe("0.039967");
+    expect(usdd?.underlyingPriceInTrx).toBe("2.982502000000000");
   });
 });
 
 describe("USDD Evidence Integration", () => {
-  it("fetches USDD evidence with valid collateral ratio and TVL", async () => {
+  it("normalizes captured USDD evidence with deterministic source timestamps", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(LIVE_FIXTURE_CAPTURED_AT));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      const body = url.includes("latest-collateral")
+        ? USDD_COLLATERAL_RESPONSE
+        : USDD_OVERVIEW_RESPONSE;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
     const evidence = await fetchUsddEvidence();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(evidence.totalSupplyUsd).toContain("$");
     expect(evidence.totalCollateralUsd).toContain("$");
     expect(evidence.collateralRatioPct).toContain("%");
-    expect(evidence.vaults.length).toBeGreaterThan(0);
+    expect(evidence.vaults).toHaveLength(4);
+    expect(evidence.source).toBe("live");
+    expect(evidence.reality).toBe("LIVE_MAINNET");
+    expect(evidence.fetchedAt).toBe(LIVE_FIXTURE_CAPTURED_AT);
+    expect(evidence.vaults[0].vaultType).toBe("TRX-A");
   });
 });

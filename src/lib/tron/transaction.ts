@@ -1,9 +1,16 @@
-import { Decimal, parseUnits, SafeMath, toDecimal } from "../math/decimal";
+import { Decimal, parseUnitsExact, SafeMath, toDecimal } from "../math/decimal";
 import { JTRX_ABI, JUSTLEND_NILE_CONTRACTS } from "../integrations/justlend/contracts";
 import { AllocationLeg, AssetValuation, Holding } from "@/domain/allocation/types";
 import { DecisionEvidenceItem, DecisionStopRecord, makeStopRecord } from "@/domain/decision/receipt";
+import { detectActiveTronNetwork } from "./network";
 
 const JUSTLEND_VALUATION_SOURCE = "https://openapi.just.network/lend/jtoken";
+
+function assertNileProvider(tronWeb: any): void {
+  if (detectActiveTronNetwork(tronWeb).id !== "nile") {
+    throw new Error("TronLink is not connected to Nile Testnet. Switch networks before requesting a signature.");
+  }
+}
 
 export type TransactionLifecycleState =
   | "IDLE"
@@ -114,17 +121,17 @@ export function evaluateNileExecutionSafety(params: {
   if (!params.preview.actionType || params.preview.method !== expectedMethod) {
     addStop("METHOD_NOT_ALLOWED", "Transaction method does not match the approved jTRX action.");
   }
-  try {
+  {
     const decimals = params.preview.actionType === "REDEEM" ? 8 : 6;
-    const expectedRaw = parseUnits(params.preview.amount, decimals);
-    if (!/^[1-9][0-9]*$/.test(params.preview.amountRaw) || expectedRaw !== params.preview.amountRaw) {
+    const expectedRaw = parseUnitsExact(params.preview.amount, decimals);
+    if (expectedRaw === null) {
+      addStop("AMOUNT_INVALID", `Transaction amount must be positive and exactly representable at ${decimals} decimal places.`);
+    } else if (!/^[1-9][0-9]*$/.test(params.preview.amountRaw) || expectedRaw !== params.preview.amountRaw) {
       addStop("AMOUNT_MISMATCH", "Transaction amount does not match the approved amount in token base units.");
     }
     if (params.preview.actionType === "SUPPLY" && !Number.isSafeInteger(Number(params.preview.amountRaw))) {
       addStop("AMOUNT_OUT_OF_RANGE", "Supply call value exceeds the safe integer range supported by this wallet flow.");
     }
-  } catch {
-    addStop("AMOUNT_INVALID", "Transaction amount could not be converted safely to token base units.");
   }
 
   const marketEvidence = params.evidence;
@@ -222,6 +229,8 @@ export interface TransactionStatusResult {
   status: "PENDING" | "CONFIRMED" | "FAILED" | "NOT_FOUND";
   blockNumber?: number;
   feeSun?: number;
+  energyUsed?: number;
+  netUsed?: number;
   energyFeeSun?: number;
   contractResult?: string;
   timestamp?: number;
@@ -303,15 +312,25 @@ export function buildPreflightChecks(params: {
   // 3. Balance sufficiency
   const cleanedBalance = (params.trxBalance || "").replace(/,/g, "").trim();
   const balanceKnown = /^\d+(?:\.\d+)?$/.test(cleanedBalance);
-  const cleanedRequired = (params.requiredAmount || "0").replace(/,/g, "").trim() || "0";
+  const amountRaw = parseUnitsExact(params.requiredAmount, 6);
+  const amountValid = amountRaw !== null;
   const balance = toDecimal(balanceKnown ? cleanedBalance : "0");
-  const required = toDecimal(cleanedRequired);
+  const required = amountValid ? new Decimal(amountRaw!).div(new Decimal(10).pow(6)) : new Decimal(0);
+  checks.push({
+    key: "AMOUNT_VALID",
+    name: "Valid TRX Amount",
+    passed: amountValid,
+    message: amountValid
+      ? "TRX amount is positive and exactly representable with 6 decimals."
+      : "Enter a positive TRX amount with no more than 6 decimal places.",
+  });
+  if (!amountValid) ready = false;
   // Energy reserve buffer (~20 TRX)
   const requiredTotal = params.asset === "TRX"
     ? required.plus(20)
     : toDecimal(20);
 
-  const hasSufficient = hasWallet && balanceKnown && balance.gte(requiredTotal);
+  const hasSufficient = hasWallet && amountValid && balanceKnown && balance.gte(requiredTotal);
   checks.push({
     key: "BALANCE_SUFFICIENT",
     name: "Sufficient Balance & Energy Buffer",
@@ -375,12 +394,22 @@ export function buildRedeemPreflightChecks(params: {
   const rawJTrxBal = params.jTrxBalance || "";
   const rawRequired = params.requiredJTrxAmount || params.redeemAmount || "0";
   const cleanedJTrxBalance = rawJTrxBal.replace(/,/g, "").trim();
-  const cleanedRequired = rawRequired.replace(/,/g, "").trim() || "0";
   const jTrxBalanceKnown = /^\d+(?:\.\d+)?$/.test(cleanedJTrxBalance);
   const jTrxBal = toDecimal(jTrxBalanceKnown ? cleanedJTrxBalance : "0");
-  const required = toDecimal(cleanedRequired);
+  const amountRaw = parseUnitsExact(rawRequired, 8);
+  const amountValid = amountRaw !== null;
+  const required = amountValid ? new Decimal(amountRaw!).div(new Decimal(10).pow(8)) : new Decimal(0);
+  checks.push({
+    key: "AMOUNT_VALID",
+    name: "Valid jTRX Amount",
+    passed: amountValid,
+    message: amountValid
+      ? "jTRX amount is positive and exactly representable with 8 decimals."
+      : "Enter a positive jTRX amount with no more than 8 decimal places.",
+  });
+  if (!amountValid) ready = false;
 
-  const hasTokens = hasWallet && jTrxBalanceKnown && jTrxBal.gt(0) && jTrxBal.gte(required);
+  const hasTokens = hasWallet && amountValid && jTrxBalanceKnown && jTrxBal.gt(0) && jTrxBal.gte(required);
   checks.push({
     key: "BALANCE_SUFFICIENT",
     name: "Sufficient jTRX Position",
@@ -423,7 +452,7 @@ export function prepareJTrxSupplyPreview(
   amountTrx: string,
   walletAddress: string
 ): ExecutionPreview {
-  const sunAmount = parseUnits(amountTrx, 6);
+  const sunAmount = parseUnitsExact(amountTrx, 6) ?? "0";
   return {
     actionId: `exec-jtrx-supply-${Date.now()}`,
     actionType: "SUPPLY",
@@ -446,7 +475,7 @@ export function prepareJTrxRedeemPreview(
   walletAddress: string
 ): ExecutionPreview {
   // jTRX has 8 decimals
-  const rawJTrxAmount = parseUnits(amountJTrx, 8);
+  const rawJTrxAmount = parseUnitsExact(amountJTrx, 8) ?? "0";
   return {
     actionId: `exec-jtrx-redeem-${Date.now()}`,
     actionType: "REDEEM",
@@ -459,8 +488,8 @@ export function prepareJTrxRedeemPreview(
     targetContract: JUSTLEND_NILE_CONTRACTS.jTokens.jTRX.base58,
     method: "redeem(uint256)",
     estimatedFeeTrx: "15 ~ 25 TRX (Energy fee or burn)",
-    approvalScope: `Redeem ${amountJTrx} jTRX from JustLend Nile contract to withdraw underlying TRX back to ${walletAddress}`,
-    riskNotice: "Testnet execution only. Burns jTRX tokens and credits underlying TRX to wallet.",
+    approvalScope: `One contract call only: redeem(uint256) burns ${amountJTrx} jTRX from the connected wallet and requests underlying TRX from JustLend Nile.`,
+    riskNotice: "Nile testnet only. Exchange rate and pool liquidity can vary; transaction costs depend on TRON resources and network fees.",
   };
 }
 
@@ -475,8 +504,8 @@ function assertAllowedJTrxPreview(preview: ExecutionPreview, actionType: "SUPPLY
   ) {
     throw new Error("Execution preview is outside the Nile jTRX allowlist.");
   }
-  const amount = toDecimal(preview.amount);
-  if (!amount.isFinite() || amount.lte(0) || parseUnits(preview.amount, decimals) !== preview.amountRaw) {
+  const expectedRaw = parseUnitsExact(preview.amount, decimals);
+  if (expectedRaw === null || expectedRaw !== preview.amountRaw) {
     throw new Error("Execution amount is invalid or does not match its token base units.");
   }
   if (actionType === "SUPPLY" && !Number.isSafeInteger(Number(preview.amountRaw))) {
@@ -499,6 +528,7 @@ export async function executeJTrxSupplyOnNile(
   if (!tronWeb || !tronWeb.ready) {
     throw new Error("TronWeb instance is not available or wallet is locked.");
   }
+  assertNileProvider(tronWeb);
 
   try {
     const contract = await tronWeb.contract(
@@ -509,7 +539,9 @@ export async function executeJTrxSupplyOnNile(
     const callValue = Number(preview.amountRaw);
 
     // Call mint() with payable value in sun
-    const tx = await contract.mint().send({
+    const mintCall = contract.mint();
+    assertNileProvider(tronWeb);
+    const tx = await mintCall.send({
       callValue,
       feeLimit: 100_000_000, // 100 TRX fee limit for energy
     });
@@ -553,6 +585,7 @@ export async function executeJTrxRedeemOnNile(
   if (!tronWeb || !tronWeb.ready) {
     throw new Error("TronWeb instance is not available or wallet is locked.");
   }
+  assertNileProvider(tronWeb);
 
   try {
     const contract = await tronWeb.contract(
@@ -561,7 +594,9 @@ export async function executeJTrxRedeemOnNile(
     );
 
     // Call redeem(uint256 redeemTokens)
-    const tx = await contract.redeem(preview.amountRaw).send({
+    const redeemCall = contract.redeem(preview.amountRaw);
+    assertNileProvider(tronWeb);
+    const tx = await redeemCall.send({
       feeLimit: 100_000_000, // 100 TRX fee limit for energy
     });
 
@@ -616,6 +651,8 @@ export async function pollTransactionStatus(
               status: data.status,
               blockNumber: data.blockNumber,
               feeSun: Number.isSafeInteger(data.feeSun) && data.feeSun >= 0 ? data.feeSun : undefined,
+              energyUsed: Number.isSafeInteger(data.energyUsageTotal) && data.energyUsageTotal >= 0 ? data.energyUsageTotal : undefined,
+              netUsed: Number.isSafeInteger(data.netUsage) && data.netUsage >= 0 ? data.netUsage : undefined,
               energyFeeSun: Number.isSafeInteger(data.energyFeeSun) && data.energyFeeSun >= 0 ? data.energyFeeSun : undefined,
               contractResult: data.contractResult,
               timestamp: data.blockTimestamp,

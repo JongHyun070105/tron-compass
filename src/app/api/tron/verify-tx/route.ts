@@ -46,6 +46,8 @@ export async function POST(request: NextRequest) {
       feeSun: receipt.feeSun,
       netFeeSun: receipt.netFeeSun,
       energyFeeSun: receipt.energyFeeSun,
+      energyUsageTotal: receipt.energyUsageTotal,
+      netUsage: receipt.netUsage,
       explorerUrl,
       timestamp: new Date().toISOString(),
     });
@@ -99,6 +101,8 @@ export async function GET(request: NextRequest) {
       feeSun: receipt.feeSun,
       netFeeSun: receipt.netFeeSun,
       energyFeeSun: receipt.energyFeeSun,
+      energyUsageTotal: receipt.energyUsageTotal,
+      netUsage: receipt.netUsage,
       explorerUrl,
       timestamp: new Date().toISOString(),
     });

@@ -219,10 +219,15 @@ export function ExecutionModal({
 
       if (!preflight.ready) {
         setLifecycleState("PREFLIGHT_FAILED");
+        const amountCheck = preflight.checks.find(
+          (check) => check.key === "AMOUNT_VALID" && !check.passed
+        );
         const balanceCheck = preflight.checks.find(
           (c) => c.key === "BALANCE_SUFFICIENT" || c.key === "JTRX_BALANCE_SUFFICIENT"
         );
-        if (balanceCheck && !balanceCheck.passed) {
+        if (amountCheck) {
+          setStatusMessage(amountCheck.message);
+        } else if (balanceCheck && !balanceCheck.passed) {
           setStatusMessage(balanceCheck.message);
         } else {
           setStatusMessage("사전 실행 조건을 충족하지 못했습니다. 지갑 연결 및 네트워크를 확인해 주세요.");
@@ -583,6 +588,8 @@ export function ExecutionModal({
             blockNumber: pollRes.blockNumber ?? null,
             contractResult: pollRes.contractResult ?? null,
             result: "CONFIRMED",
+            energyUsed: pollRes.energyUsed ?? null,
+            netUsed: pollRes.netUsed ?? null,
             actualFee,
             balanceBefore: actionMode === "SUPPLY" ? balancesBefore.trxBalance : balancesBefore.jTrxBalance,
             balanceAfter: actionMode === "SUPPLY" ? balancesAfter.trxBalance : balancesAfter.jTrxBalance,
@@ -629,6 +636,7 @@ export function ExecutionModal({
 
   const isInsufficientFunds =
     !isDemoMode &&
+    preflight.checks.every((check) => check.key !== "AMOUNT_VALID" || check.passed) &&
     preflight.checks.some(
       (c) =>
         (c.key === "BALANCE_SUFFICIENT" || c.key === "JTRX_BALANCE_SUFFICIENT") &&
@@ -805,9 +813,17 @@ export function ExecutionModal({
                       : balanceRefreshState === "FETCHING" ? "Refreshing Nile balance…" : `${liveTrxBalance} TRX`
                     : isDemoMode
                     ? "SIMULATED · 250.00 jTRX"
-                    : balanceRefreshState === "FETCHING" ? "Refreshing Nile balance…" : liveJTrxBalance === null ? "UNAVAILABLE" : `${liveJTrxBalance} jTRX`}
+                  : balanceRefreshState === "FETCHING" ? "Refreshing Nile balance…" : liveJTrxBalance === null ? "UNAVAILABLE" : `${liveJTrxBalance} jTRX`}
                 </span>
               </div>
+              {actionMode === "REDEEM" && (
+                <div>
+                  <span className="text-slate-400 block text-[11px]">TRX 잔고 · 수수료 버퍼</span>
+                  <span className="font-mono font-bold text-sm text-slate-900">
+                    {isDemoMode ? "SIMULATED · 500.00 TRX" : balanceRefreshState === "FETCHING" ? "Refreshing Nile balance…" : `${liveTrxBalance} TRX`}
+                  </span>
+                </div>
+              )}
               <div>
                 <span className="text-slate-400 block text-[11px]">수수료 안내</span>
                 <span className="text-slate-600 text-[11px]">{preview.estimatedFeeTrx} · actual fee unavailable</span>
@@ -822,6 +838,7 @@ export function ExecutionModal({
               <div className="flex justify-between gap-3"><span className="text-slate-500">요청 수량 / 단위</span><strong className="text-right font-mono text-slate-900">{preview.amount} {preview.asset} · {preview.amountRaw} base units</strong></div>
               {actionMode === "REDEEM" && <div className="flex justify-between gap-3"><span className="text-slate-500">예상 반환량</span><strong className="text-right text-slate-900">{estimatedRedeemTrx === null ? "Unavailable" : `≈ ${estimatedRedeemTrx} TRX`}</strong></div>}
               {actionMode === "REDEEM" && <p className="text-[10px] leading-relaxed text-slate-500">{estimatedRedeemTrx === null ? "Nile exchangeRateStored is unavailable; no return estimate is shown." : "Approximation from the current Nile jTRX exchangeRateStored. The contract result may differ; this is not a guaranteed return."}</p>}
+              {actionMode === "REDEEM" && <div className="flex justify-between gap-3"><span className="text-slate-500">Expected result</span><strong className="text-right text-slate-900">jTRX decreases; TRX increases. Net TRX delta may include network fees.</strong></div>}
               <div className="flex justify-between gap-3"><span className="text-slate-500">Contract</span><code className="text-right text-[10px] text-slate-800 break-all">{preview.targetContract}</code></div>
               <div className="flex justify-between gap-3"><span className="text-slate-500">Method</span><code className="text-right text-slate-800">{preview.method}</code></div>
               <div><span className="text-slate-500">Risk</span><p className="mt-0.5 text-slate-800">{preview.riskNotice}</p></div>
@@ -858,7 +875,11 @@ export function ExecutionModal({
               <div className="mb-2 font-bold text-slate-800">Approval sheet · review before wallet request</div>
               <dl className="grid grid-cols-[90px_1fr] gap-x-2 gap-y-1.5">
                 <dt className="text-slate-500">Amount</dt><dd className="font-semibold text-slate-900">{preview.amount} {preview.asset}</dd>
-                <dt className="text-slate-500">Target network</dt><dd className="font-semibold text-slate-900">Nile Testnet · current: {isDemoMode ? "SIMULATED" : networkName}</dd>
+                <dt className="text-slate-500">Wallet</dt><dd className="break-all font-mono text-slate-800">{isDemoMode ? "SIMULATED wallet" : isWalletConnected ? walletAddress : "Not connected"}</dd>
+                <dt className="text-slate-500">Target network</dt><dd className="font-semibold text-slate-900">Nile Testnet · current: {isDemoMode ? "SIMULATED" : activeWalletNetwork}</dd>
+                {actionMode === "REDEEM" && <><dt className="text-slate-500">jTRX balance</dt><dd className="font-mono text-slate-800">{isDemoMode ? "250.00 jTRX · SIMULATED" : liveJTrxBalance === null ? "UNAVAILABLE" : `${liveJTrxBalance} jTRX`}</dd><dt className="text-slate-500">TRX fee balance</dt><dd className="font-mono text-slate-800">{isDemoMode ? "500.00 TRX · SIMULATED" : `${liveTrxBalance} TRX`}</dd></>}
+                <dt className="text-slate-500">Raw units</dt><dd className="font-mono text-slate-800">{preview.amountRaw} base units</dd>
+                {actionMode === "REDEEM" && <><dt className="text-slate-500">TRX estimate</dt><dd className="text-slate-800">{estimatedRedeemTrx === null ? "Unavailable" : `≈ ${estimatedRedeemTrx} TRX; variable exchange rate`}</dd><dt className="text-slate-500">Expected result</dt><dd className="text-slate-800">jTRX decreases; TRX increases. Net TRX delta may include network fees.</dd></>}
                 <dt className="text-slate-500">Contract</dt><dd className="break-all font-mono text-slate-800">{preview.targetContract}</dd>
                 <dt className="text-slate-500">Method</dt><dd className="font-mono text-slate-800">{preview.method}</dd>
                 <dt className="text-slate-500">Approval scope</dt><dd className="text-slate-700">{preview.approvalScope}</dd>
@@ -964,7 +985,7 @@ export function ExecutionModal({
                 <strong>{isDemoMode ? "시뮬레이션 확인: " : "명시적 실행 동의: "}</strong>
                 {isDemoMode
                   ? `SIMULATED ONLY: ${preview.amount} ${preview.asset}. No wallet request or chain action will occur.`
-                  : `I reviewed ${preview.amount} ${preview.asset}, network, contract, method, fee estimate, risks and scope. Request the TronLink signature.`}
+                  : `I reviewed ${preview.amount} ${preview.asset}, wallet, network, balances, contract, method, fee estimate, risks, scope and expected result. Request the TronLink signature.`}
               </label>
             </div>
           )}

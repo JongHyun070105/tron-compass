@@ -88,6 +88,8 @@ pnpm build
 pnpm start
 ```
 
+`pnpm test` uses captured fixtures and mocked HTTP responses; the test setup blocks non-loopback network requests, so the default suite does not require internet access. `pnpm verify:live` is an optional, read-only health check for the current JustLend, USDD and Nile TronGrid endpoints. It makes bounded external requests and is separate from the deterministic test suite.
+
 Copy `.env.example` to `.env.local` and configure server-side Gemini / TronGrid credentials if required. Do not commit `.env.local`, wallet secrets, test results or generated artifacts.
 
 ## Not implemented / not proven

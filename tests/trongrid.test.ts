@@ -148,6 +148,8 @@ describe("TronGridClient Server-Side Unit Tests", () => {
                 result: "SUCCESS",
                 energy_fee: 15000000,
                 net_fee: 265000,
+                energy_usage_total: 42000,
+                net_usage: 345,
               },
             }),
         });
@@ -162,6 +164,22 @@ describe("TronGridClient Server-Side Unit Tests", () => {
     expect(receipt.blockNumber).toBe(71255555);
     expect(receipt.feeSun).toBe(265000);
     expect(receipt.energyFeeSun).toBe(15000000);
+    expect(receipt.energyUsageTotal).toBe(42000);
+    expect(receipt.netUsage).toBe(345);
+  });
+
+  it("does not confirm a block-included transaction without an explicit SUCCESS result", async () => {
+    const txHash = "included-no-result-222222222222222222222222222222222222222222222222";
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ id: txHash, blockNumber: 71255558, receipt: {} }),
+    });
+
+    const receipt = await new TronGridClient("nile").getTransactionInfo(txHash);
+
+    expect(receipt.status).toBe("PENDING");
+    expect(receipt.blockNumber).toBe(71255558);
+    expect(receipt.contractResult).toBe("PENDING");
   });
 
   it("leaves actual fee unavailable when TronGrid omits its total fee field", async () => {
