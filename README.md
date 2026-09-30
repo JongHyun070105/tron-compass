@@ -133,6 +133,35 @@ During final QA, this transaction also exercised the reconciliation path: an ear
 
 See **[docs/ONCHAIN_PROOF.md](docs/ONCHAIN_PROOF.md)** for the complete Supply/Redeem evidence, verification model, reconciliation behavior, and exact limits of what the chain proves.
 
+
+## Reproducible on-chain proof
+
+Judges do not need to trust screenshots or this README. The repository includes a **read-only executable verifier** for both real Nile flows:
+
+```bash
+pnpm verify:onchain
+```
+
+It calls Nile TronGrid for each fixed transaction hash, requires the exact hash, block inclusion, and explicit `SUCCESS`, and compares the historical block/fee evidence. It **never signs or broadcasts** a transaction.
+
+Submission artifacts:
+
+- [Executable verifier](scripts/verify-onchain-proof.mjs)
+- [Normalized transaction evidence](evidence/onchain/verified-transactions.json)
+- [Normalized verification log](evidence/onchain/VERIFICATION_LOG.md)
+- [Detailed on-chain proof](docs/ONCHAIN_PROOF.md)
+
+### Flow hashes
+
+| Flow | Transaction | Verification |
+|---|---|---|
+| jTRX Supply | `855416e66dc73f0909cb822b28ec64a3a0e9c7b69c7580cb98c70e1971a1b41c` | Nile block `71376676`, SUCCESS |
+| jTRX Redeem | `4a95a27d988af726e79744a98660398133687bab51da45f5fb57ca055e1ea286` | Nile block `71382254`, SUCCESS |
+
+### Kiln API logs
+
+**Not applicable to this TRON Challenge B submission.** TRON Compass does not use Kiln or the FuriosaAI execution stack. Its external execution evidence is the Nile transaction + TronGrid verification above. No Kiln API log is fabricated or included.
+
 ## Market evidence and valuation
 
 - JustLend base APY comes from [`/lend/jtoken`](https://openapi.just.network/lend/jtoken).
