@@ -1,0 +1,34 @@
+{
+  "recordType": "normalized-onchain-proof-summary",
+  "network": "TRON Nile Testnet",
+  "rawApiResponsesPreserved": false,
+  "note": "This file is a normalized audit summary of the final verified observations, not a raw TronGrid response. Run 'pnpm verify:onchain' to reproduce current chain verification.",
+  "flows": [
+    {
+      "flow": "redeem",
+      "contract": "TKM7w4qFmkXQLEF2MgrQroBYpd5TY7i1pq",
+      "method": "redeem(uint256)",
+      "amount": "100 jTRX",
+      "returned": "1.117763 TRX",
+      "txHash": "4a95a27d988af726e79744a98660398133687bab51da45f5fb57ca055e1ea286",
+      "blockNumber": 71382254,
+      "result": "SUCCESS",
+      "status": "CONFIRMED",
+      "actualFeeTrx": "7.5699",
+      "explorer": "https://nile.tronscan.org/transaction/4a95a27d988af726e79744a98660398133687bab51da45f5fb57ca055e1ea286/overview"
+    },
+    {
+      "flow": "supply",
+      "contract": "TKM7w4qFmkXQLEF2MgrQroBYpd5TY7i1pq",
+      "method": "mint()",
+      "amount": "985 TRX",
+      "minted": "88122.39013208 jTRX",
+      "txHash": "855416e66dc73f0909cb822b28ec64a3a0e9c7b69c7580cb98c70e1971a1b41c",
+      "blockNumber": 71376676,
+      "result": "SUCCESS",
+      "status": "CONFIRMED",
+      "actualFeeTrx": "6.5894",
+      "explorer": "https://nile.tronscan.org/transaction/855416e66dc73f0909cb822b28ec64a3a0e9c7b69c7580cb98c70e1971a1b41c"
+    }
+  ]
+}
