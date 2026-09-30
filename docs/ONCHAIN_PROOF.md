@@ -43,6 +43,33 @@ A prior Nile execution also demonstrated the supply path.
 
 The old local balance snapshot from this supply run was later treated as stale and is **not** used as proof of the TRX balance delta. The on-chain transaction result itself remains the execution proof.
 
+
+## Reproduce the proof
+
+Run the repository verifier:
+
+```bash
+pnpm verify:onchain
+```
+
+The command performs read-only calls to Nile TronGrid for both fixed transaction hashes and exits non-zero if any required proof check fails. It checks:
+
+- exact transaction hash;
+- block inclusion;
+- explicit `SUCCESS`;
+- expected historical block;
+- observed total fee.
+
+Optional `TRONGRID_API_KEY` is read from the environment when available; the script never prints it.
+
+Related artifacts:
+
+- [`scripts/verify-onchain-proof.mjs`](../scripts/verify-onchain-proof.mjs)
+- [`evidence/onchain/verified-transactions.json`](../evidence/onchain/verified-transactions.json)
+- [`evidence/onchain/VERIFICATION_LOG.md`](../evidence/onchain/VERIFICATION_LOG.md)
+
+The evidence files are normalized audit records, not falsely labeled raw API dumps. The original transient Redeem failure payload was not preserved, so the repository states that limitation explicitly.
+
 ## What the chain proves
 
 For the Redeem transaction, the on-chain record proves that:
