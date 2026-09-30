@@ -10,7 +10,8 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "verify:live": "node scripts/verify-live.mjs"
+    "verify:live": "node scripts/verify-live.mjs",
+    "verify:onchain": "node scripts/verify-onchain-proof.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",
